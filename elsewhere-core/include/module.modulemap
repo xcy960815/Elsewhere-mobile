@@ -1,0 +1,4 @@
+module ElsewhereCore {
+    header "ElsewhereCore.h"
+    export *
+}
