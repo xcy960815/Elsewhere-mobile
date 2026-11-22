@@ -137,7 +137,7 @@ impl Request {
             EwCommandMountDdi => {
                 let ddi = ddi::verify(self.ddi_dir.as_deref(), job).await?;
                 if !self.mount_status(&provider, job).await? {
-                    ddi::mount(&provider, ddi, self.expected.as_deref(), job).await?;
+                    ddi::mount(&provider, ddi, self.expected.as_deref(), job, Some(&job.awaiting_receipt)).await?;
                 }
                 Ok(json!({ "mounted": true }))
             }
@@ -145,7 +145,7 @@ impl Request {
                 let mounted_now = !self.mount_status(&provider, job).await?;
                 if mounted_now {
                     let ddi = ddi::verify(self.ddi_dir.as_deref(), job).await?;
-                    ddi::mount(&provider, ddi, self.expected.as_deref(), job).await?;
+                    ddi::mount(&provider, ddi, self.expected.as_deref(), job, None).await?;
                 }
                 job.stage(EwStageApplyingLocation)?;
                 let mut input = Dictionary::new();

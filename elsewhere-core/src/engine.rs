@@ -54,9 +54,12 @@ impl Job {
     }
 
     fn finish(&self, result: Result<serde_json::Value, Failure>) {
-        match self.check_cancelled().and(result) {
+        match result {
             Ok(json) => self.emit(EwEventKind::EwEventSuccess, EwErrorCode::EwErrorOk, false, json.to_string().as_bytes()),
-            Err(e) => self.emit(EwEventKind::EwEventFailure, e.code, self.awaiting_receipt.load(Ordering::Relaxed), e.message.as_bytes()),
+            Err(e) => {
+                let e = self.check_cancelled().err().unwrap_or(e);
+                self.emit(EwEventKind::EwEventFailure, e.code, self.awaiting_receipt.load(Ordering::Relaxed), e.message.as_bytes());
+            }
         }
     }
 }
@@ -140,7 +143,7 @@ mod tests {
     use crate::{
         EwCommand::*, EwErrorCode::*, EwEventKind::*, EwRequest, EwStage::*,
         ew_cancel, ew_engine_create, ew_engine_destroy, ew_lockdown_port, ew_submit,
-        location::action_frame, pairing::tests::xml_record, receipt::ReceiptStream,
+        pairing::tests::xml_record, receipt::ReceiptStream,
     };
 
     type Event = (u64, EwEventKind, EwStage, EwErrorCode, bool);
@@ -223,19 +226,22 @@ mod tests {
     }
 
     #[test]
-    fn a_lost_or_cancelled_location_write_is_unknown_only_after_the_action_was_sent() {
+    fn location_receipt_controls_the_terminal_event_even_after_cancellation() {
         let runtime = Builder::new_current_thread().build().unwrap();
         runtime.block_on(async {
             let (sender, events) = sync::channel::<Event>();
             let context = ptr::from_ref(&sender).cast_mut().cast();
-            for (send_action, cancelled_by_caller) in [(false, true), (true, true), (true, false)] {
+            for (send_action, expected_code) in [
+                (false, EwErrorCancelled), (true, EwErrorCancelled),
+                (true, EwErrorTunnelUnavailable), (true, EwErrorOk),
+            ] {
                 let (cancel, cancelled) = watch::channel(false);
                 let job = Job {
                     id: 7, callback: capture, context, stage: Cell::new(EwStageApplyingLocation), cancelled,
                     awaiting_receipt: Arc::new(AtomicBool::new(false)),
                 };
                 let (socket, peer) = duplex(512);
-                let mut stream = ReceiptStream::new(socket, &job.awaiting_receipt, action_frame);
+                let mut stream = ReceiptStream::location(socket, &job.awaiting_receipt);
                 stream.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n").await.unwrap();
                 stream.flush().await.unwrap();
                 if send_action {
@@ -245,12 +251,18 @@ mod tests {
                     stream.write_all(&frame).await.unwrap();
                     stream.flush().await.unwrap();
                 }
+                if expected_code == EwErrorOk {
+                    assert!(job.awaiting_receipt.swap(false, Ordering::Relaxed));
+                    cancel.send_replace(true);
+                    job.finish(Ok(serde_json::json!({"ok": true})));
+                    assert_eq!(events.try_recv().unwrap(), (7, EwEventSuccess, EwStageApplyingLocation, EwErrorOk, false));
+                    continue;
+                }
                 drop(peer);
-                if cancelled_by_caller { cancel.send_replace(true); }
+                if expected_code == EwErrorCancelled { cancel.send_replace(true); }
                 let error = stream.write_all(b"closed").await.unwrap_err();
                 job.finish(Err(idevice::IdeviceError::Socket(error).into()));
-                let code = if cancelled_by_caller { EwErrorCancelled } else { EwErrorTunnelUnavailable };
-                assert_eq!(events.try_recv().unwrap(), (7, EwEventFailure, EwStageApplyingLocation, code, send_action));
+                assert_eq!(events.try_recv().unwrap(), (7, EwEventFailure, EwStageApplyingLocation, expected_code, send_action));
             }
         });
     }

@@ -8,12 +8,6 @@ use idevice::{
 
 use crate::{engine::Job, error::Failure, protocol::identity, receipt::ReceiptStream};
 
-pub(crate) fn action_frame(frame: &[u8]) -> bool {
-    // The locked tunnel writes a complete HTTP/2 frame at once. Handshakes and window updates also flush.
-    let action = b"com.apple.coredevice.action.";
-    frame.get(3) == Some(&0) && frame.windows(action.len()).any(|s| s == action)
-}
-
 pub(crate) async fn invoke(
     provider: &TcpProvider, action: &str, input: plist::Dictionary, expected: Option<&str>, job: &Job,
 ) -> Result<(), Failure> {
@@ -27,7 +21,7 @@ pub(crate) async fn invoke(
     }
     let service = handshake.services.get("com.apple.coredevice.locationservice").ok_or(IdeviceError::ServiceNotFound)?;
     let stream = adapter.connect(service.port).await.map_err(IdeviceError::from)?;
-    let mut client = CoreDeviceServiceClient::new(ReceiptStream::new(stream, &job.awaiting_receipt, action_frame)).await?;
+    let mut client = CoreDeviceServiceClient::new(ReceiptStream::location(stream, &job.awaiting_receipt)).await?;
     job.check_cancelled()?;
     let result = client.invoke_with_plist_action("com.apple.coredevice.feature.simulatelocation", input, action).await;
     if result.is_ok() || matches!(&result, Err(IdeviceError::CoreDevice(CoreDeviceError::DeviceError(_)))) {

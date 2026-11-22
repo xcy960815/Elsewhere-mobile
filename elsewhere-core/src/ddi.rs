@@ -3,7 +3,7 @@ use std::{
     fs::File,
     io::{BufReader, Read, Seek},
     path::Path,
-    sync::atomic::Ordering,
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
     time::Duration,
 };
 
@@ -159,9 +159,21 @@ fn recovery(error: IdeviceError, status: Result<bool, Failure>, retried: bool) -
     if retry { Ok(Recovery::Retry) } else { Err(failure) }
 }
 
+fn mount_stream(socket: Box<dyn ReadWrite>, pending: Option<&Arc<AtomicBool>>) -> Box<dyn ReadWrite> {
+    match pending {
+        Some(pending) => Box::new(ReceiptStream::any_write(socket, pending)),
+        None => socket,
+    }
+}
+
 pub(crate) async fn mount(
-    provider: &TcpProvider, ddi: VerifiedDdi, expected: Option<&str>, job: &Job,
+    provider: &TcpProvider, ddi: VerifiedDdi, expected: Option<&str>, job: &Job, pending: Option<&Arc<AtomicBool>>,
 ) -> Result<(), Failure> {
+    let clear_receipt = || {
+        if let Some(pending) = pending {
+            pending.store(false, Ordering::Relaxed);
+        }
+    };
     let mut lockdown = LockdownClient::connect(provider).await?;
     lockdown.start_session(&provider.pairing_file).await?;
     let chip_id = lockdown.get_value(Some("UniqueChipID"), None).await?.as_unsigned_integer()
@@ -209,12 +221,11 @@ pub(crate) async fn mount(
     let mut retried = false;
     loop {
         let socket = MounterSocket::checked(provider, expected).await?;
-        let stream = ReceiptStream::new(socket, &job.awaiting_receipt, |_| true);
-        let mut mounter = ImageMounter::new(Idevice::new(Box::new(stream), &provider.label));
+        let mut mounter = ImageMounter::new(Idevice::new(mount_stream(socket, pending), &provider.label));
         job.stage(EwStageUploadingDdi)?;
         let result = match mounter.upload_image("Personalized", &image, signature.clone()).await {
             Ok(()) => {
-                job.awaiting_receipt.store(false, Ordering::Relaxed);
+                clear_receipt();
                 job.stage(EwStageMountingDdi)?;
                 mounter.mount_image("Personalized", signature.clone(), Some(trust_cache.clone()), None).await
             }
@@ -223,18 +234,18 @@ pub(crate) async fn mount(
         drop(mounter);
         let error = match result {
             Ok(()) => {
-                job.awaiting_receipt.store(false, Ordering::Relaxed);
+                clear_receipt();
                 return Ok(());
             }
             Err(e) => e,
         };
         if matches!(error, IdeviceError::DeviceLocked | IdeviceError::InvalidHostID | IdeviceError::InternalError(_) |
             IdeviceError::UnknownErrorType(_) | IdeviceError::DeveloperModeNotEnabled | IdeviceError::CanceledByUser) {
-            job.awaiting_receipt.store(false, Ordering::Relaxed);
+            clear_receipt();
         }
         let status = mounted(provider, expected).await;
         if status.is_ok() {
-            job.awaiting_receipt.store(false, Ordering::Relaxed);
+            clear_receipt();
         }
         if recovery(error, status, retried)? == Recovery::Mounted {
             return Ok(());
@@ -249,6 +260,24 @@ mod tests {
     use super::*;
     use std::{fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
     use crate::{ew_ddi_verify, tests::sync_result};
+
+    #[test]
+    fn lost_mount_reply_only_marks_a_tracked_receipt() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+
+        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
+            for tracked in [false, true] {
+                let awaiting_receipt = Arc::new(AtomicBool::new(false));
+                let (socket, peer) = duplex(64);
+                let mut stream = mount_stream(Box::new(socket), tracked.then_some(&awaiting_receipt));
+                stream.write_all(b"mount").await.unwrap();
+                stream.flush().await.unwrap();
+                drop(peer);
+                assert_eq!(stream.read_u8().await.unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+                assert_eq!(awaiting_receipt.load(Ordering::Relaxed), tracked);
+            }
+        });
+    }
 
     #[test]
     fn verifies_the_entire_image_and_reports_missing_or_damaged_components() {
