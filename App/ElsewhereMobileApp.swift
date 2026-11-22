@@ -1,26 +1,30 @@
 // 系统从私有队列交付任务，旧 SDK 没有标注这次向主执行器的单向移交。
 @preconcurrency import BackgroundTasks
+import OSLog
 import SwiftUI
 import UIKit
 
 @main
 struct ElsewhereMobileApp: App {
-    private static let refreshID = "com.elsewhere.mobile.exit-refresh"
+    private static let refreshID = AppIdentifiers.current.backgroundRefreshID
+
+    private static let refreshLog = Logger(subsystem: AppIdentifiers.current.hostBundleID, category: "BackgroundRefresh")
 
     init() {
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.refreshID, using: nil) { @Sendable task in
+        let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.refreshID, using: nil) { @Sendable task in
             guard let refresh = task as? BGAppRefreshTask else { task.setTaskCompleted(success: false); return }
             Task { @MainActor in
                 let store = AppStore.shared, env = store.environment
                 do {
-                    let state = try await env.stateStore.load()
+                    let state = try await env.stateStore.load(adaptingTo: env.capabilities)
                     guard env === store.environment, !env.isDemo else { refresh.setTaskCompleted(success: true); return }
-                    Self.scheduleRefresh(settings: state.settings)
-                    guard state.settings.exitFeaturesEnabled, state.settings.watchMode != .off else {
+                    let settings = state.settings
+                    Self.scheduleRefresh(settings: settings)
+                    guard settings.exitFeaturesEnabled, settings.watchMode != .off else {
                         refresh.setTaskCompleted(success: true)
                         return
                     }
-                    let proxy = try state.settings.parsedProxy.get()
+                    let proxy = try settings.parsedProxy.get()
                     var devices = store.readyDevices
                     if devices.isEmpty {
                         devices = try await env.pairingStore.records().map { record in
@@ -32,10 +36,16 @@ struct ElsewhereMobileApp: App {
                     }
                     guard env === store.environment else { refresh.setTaskCompleted(success: true); return }
                     let selected = state.selectedDeviceID ?? devices.first?.id
-                    let targets = devices.filter { state.settings.applyToAll || $0.id == selected }
-                    env.exitMonitor.handleBackgroundRefresh(refresh, settings: state.settings, proxy: proxy, targets: targets)
-                } catch { refresh.setTaskCompleted(success: false) }
+                    let targets = devices.filter { settings.applyToAll || $0.id == selected }
+                    env.exitMonitor.handleBackgroundRefresh(refresh, settings: settings, proxy: proxy, targets: targets)
+                } catch {
+                    Self.refreshLog.error("Background refresh failed: \(error.localizedDescription)")
+                    refresh.setTaskCompleted(success: false)
+                }
             }
+        }
+        if !registered {
+            Self.refreshLog.error("Could not register background task \(Self.refreshID, privacy: .public)")
         }
     }
 
@@ -47,7 +57,11 @@ struct ElsewhereMobileApp: App {
         }
         let request = BGAppRefreshTaskRequest(identifier: refreshID)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
-        try? BGTaskScheduler.shared.submit(request)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            refreshLog.error("Could not schedule \(refreshID, privacy: .public): \(error.localizedDescription)")
+        }
     }
 
     var body: some Scene {
@@ -187,15 +201,17 @@ private struct MobileNavigation: View {
 
     @ViewBuilder private func content(_ page: Page) -> some View {
         switch page {
-        case .location: LocationView(openCities: { selection = .cities })
-        case .map: MapView()
-        case .cities: CitiesView(openMap: { selection = .map })
+        case .location: LocationView(openCities: { selection = .cities }, openOnboarding: { showingOnboarding = true })
+        case .map: MapView(openOnboarding: { showingOnboarding = true })
+        case .cities: CitiesView(openMap: { selection = .map }, openOnboarding: { showingOnboarding = true })
         case .settings: SettingsView(openOnboarding: { showingOnboarding = true }, replaySplash: { showingSplash = true })
         }
     }
 }
 
 extension AppStore {
+    var needsPairingSetup: Bool { !isDemo && pairingRecords.isEmpty }
+
     func importPendingPairings(from inbox: PairingInbox? = nil) async -> [String] {
         guard !isDemo else { return [] }
         let inbox = inbox ?? PairingInbox()

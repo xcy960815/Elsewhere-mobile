@@ -7,9 +7,17 @@ struct CitiesView: View {
     @State private var adding = false
     @State private var confirmingReset = false
     let openMap: () -> Void
+    let openOnboarding: () -> Void
 
     var body: some View {
         List {
+            if store.needsPairingSetup {
+                Section {
+                    Text("尚未配置目标设备，无法直接应用城市定位。")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    PairingSetupActions(setupTitle: "打开配置向导", openOnboarding: openOnboarding)
+                }
+            }
             if let message = store.feedback {
                 FeedbackBanner(message: message, onDismiss: store.dismissFeedback)
                     .listRowInsets(EdgeInsets()).listRowBackground(Color.clear)

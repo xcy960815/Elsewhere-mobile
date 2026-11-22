@@ -4,10 +4,12 @@ struct LocationView: View {
     @Environment(AppStore.self) private var store
     @State private var tappedCity: UUID?
     let openCities: () -> Void
+    let openOnboarding: () -> Void
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                modeCard
                 deviceCard
                 currentLocation
                 if let feedback = store.feedback {
@@ -58,6 +60,29 @@ struct LocationView: View {
         .refreshable { await store.refreshDevices(); await store.refreshExit() }
         .sensoryFeedback(.impact(weight: .light), trigger: tappedCity)
         .sensoryFeedback(trigger: store.feedback) { _, message in message?.sensation }
+    }
+
+    @ViewBuilder private var modeCard: some View {
+        if store.needsPairingSetup {
+            SurfaceCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("尚未配置真机", systemImage: "iphone.badge.exclamationmark").font(.headline)
+                    Text("真机改定位需要先导入配对文件并接通路由；如果想立即在手机上体验全部功能，可直接开启演示模式。")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    PairingSetupActions(setupTitle: "打开配置向导", openOnboarding: openOnboarding)
+                }
+            }
+        } else if store.isDemo {
+            SurfaceCard {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("当前处于演示模式", systemImage: "sparkles").font(.headline)
+                    Text("所有定位操作仅作用在模拟设备上，不会修改本机真实定位。")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    Button("切换真机模式") { Task { await store.switchToDemo(false) } }
+                        .buttonStyle(.bordered).disabled(store.busyMessage != nil)
+                }
+            }
+        }
     }
 
     private var deviceCard: some View {
@@ -154,6 +179,25 @@ struct LocationView: View {
                 }
             }
         }
+    }
+}
+
+struct PairingSetupActions: View {
+    @Environment(AppStore.self) private var store
+    let setupTitle: LocalizedStringKey
+    let openOnboarding: () -> Void
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack { buttons }
+            VStack(alignment: .leading) { buttons }
+        }
+    }
+
+    @ViewBuilder private var buttons: some View {
+        Button("开启演示模式") { Task { await store.switchToDemo(true) } }
+            .buttonStyle(.borderedProminent).disabled(store.busyMessage != nil)
+        Button(setupTitle, action: openOnboarding).buttonStyle(.bordered)
     }
 }
 

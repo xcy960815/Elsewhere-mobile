@@ -33,7 +33,9 @@ import SwiftUI
     @ObservationIgnored private var monitoring: Task<Void, Never>?
     @ObservationIgnored private var zoneCheck: Task<Void, Never>?
     var exitLoading: Bool { exitRequest != nil }
-    var settings: AppSettings { state.settings }
+    var capabilities: AppCapabilities { environment.capabilities }
+    var effectiveSettings: AppSettings { state.settings.adapted(to: capabilities) }
+    var settings: AppSettings { effectiveSettings }
     var cities: [Place] { state.cities }
     var records: [DeviceID: AppliedLocationRecord] { state.records }
     var selectedDeviceID: DeviceID? { state.selectedDeviceID }
@@ -71,7 +73,7 @@ import SwiftUI
     func loadSettingsOnly() async -> Bool {
         let env = environment
         do {
-            let saved = try await env.stateStore.load()
+            let saved = try await env.stateStore.load(adaptingTo: env.capabilities)
             guard env === environment else { return false }
             state = saved
             loaded = true
@@ -466,6 +468,7 @@ import SwiftUI
     func updateSettings(_ mutate: (inout AppSettings) -> Void) async {
         let previous = settings, env = environment
         mutate(&state.settings)
+        state.settings = effectiveSettings
         let updated = settings
         let reset = previous.exitFeaturesEnabled != updated.exitFeaturesEnabled || previous.customProxyText != updated.customProxyText
         if reset { monitoring?.cancel(); following?.cancel(); exitRequest?.cancel(); (exit, pendingExitEvent, exitError, exitRequest) = (nil, nil, nil, nil) }

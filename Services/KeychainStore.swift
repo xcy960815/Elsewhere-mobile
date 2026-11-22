@@ -20,7 +20,7 @@ enum KeychainStoreError: LocalizedError, Equatable, Sendable {
 
 struct KeychainPairingKeyProvider: PairingKeyProvider {
     private func query(for account: String) -> [CFString: CFTypeRef] {
-        [kSecClass: kSecClassGenericPassword, kSecAttrService: "com.elsewhere.mobile.pairing-keys" as CFString,
+        [kSecClass: kSecClassGenericPassword, kSecAttrService: AppIdentifiers.current.keychainService as CFString,
          kSecAttrAccount: account as CFString]
     }
 

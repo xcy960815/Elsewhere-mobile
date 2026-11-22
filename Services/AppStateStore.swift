@@ -11,6 +11,12 @@ struct AppSettings: Codable, Equatable, Sendable {
     var customProxyText = ""
     var hasSeenSplash = false
     var hasCompletedOnboarding = false
+
+    func adapted(to capabilities: AppCapabilities) -> Self {
+        var result = self
+        if !capabilities.hasBuiltInTunnel { result.channelMode = .existingRoute }
+        return result
+    }
 }
 
 struct ExitBaseline: Codable, Equatable, Sendable {
@@ -71,7 +77,11 @@ actor AppStateStore {
         var knownDeviceNames: [DeviceID: String] = [:]
     }
 
-    static let defaultSnapshotSuiteName = "group.com.elsewhere.mobile.snapshot"
+    static var defaultSnapshotSuiteName: String { AppIdentifiers.current.snapshotAppGroup ?? "group.com.elsewhere.mobile.snapshot" }
+    private static func accessibleSuite(_ name: String?) -> String? {
+        if name == defaultSnapshotSuiteName && !AppCapabilities.current.hasSnapshotAppGroup { return nil }
+        return name
+    }
     private static let snapshotKey = "widgetSnapshot"
     private static let writes = NSLock()
     private let file: URL?
@@ -83,7 +93,7 @@ actor AppStateStore {
     init(storageDirectory: URL? = URL.applicationSupportDirectory.appending(path: "ElsewhereMobile"),
          snapshotSuiteName: String? = AppStateStore.defaultSnapshotSuiteName) {
         file = storageDirectory?.appending(path: "state.json")
-        self.snapshotSuiteName = storageDirectory == nil ? nil : snapshotSuiteName
+        self.snapshotSuiteName = storageDirectory == nil ? nil : Self.accessibleSuite(snapshotSuiteName)
     }
 
     func load() throws -> State {
@@ -93,6 +103,12 @@ actor AppStateStore {
         } catch CocoaError.fileReadNoSuchFile {
             return State()
         }
+    }
+
+    func load(adaptingTo capabilities: AppCapabilities) throws -> State {
+        let state = try load()
+        guard !capabilities.hasBuiltInTunnel, state.settings.channelMode == .builtInTunnel else { return state }
+        return try update { $0.settings.channelMode = .existingRoute }
     }
 
     func saveSettings(_ settings: AppSettings) throws { try update { $0.settings = settings } }
@@ -157,7 +173,7 @@ actor AppStateStore {
     }
 
     var widgetSnapshot: WidgetSnapshot? {
-        Self.readWidgetSnapshot(suiteName: snapshotSuiteName) ?? memorySnapshot
+        memorySnapshot ?? Self.readWidgetSnapshot(suiteName: snapshotSuiteName)
     }
 
     func refreshDisplaySnapshot(selectedDevice: TargetDevice?, at date: Date) throws {
@@ -189,19 +205,19 @@ actor AppStateStore {
     }
 
     func writeWidgetSnapshot(_ snapshot: WidgetSnapshot) throws {
-        guard let snapshotSuiteName else {
+        guard let snapshotSuiteName, let defaults = UserDefaults(suiteName: snapshotSuiteName) else {
             memorySnapshot = snapshot
             return
         }
-        guard let defaults = UserDefaults(suiteName: snapshotSuiteName) else { throw CocoaError(.fileWriteUnknown) }
         defaults.set(try JSONEncoder().encode(snapshot), forKey: Self.snapshotKey)
+        memorySnapshot = nil
         if snapshotSuiteName == Self.defaultSnapshotSuiteName {
             WidgetCenter.shared.reloadTimelines(ofKind: "ElsewhereLocation")
         }
     }
 
     static func readWidgetSnapshot(suiteName: String? = defaultSnapshotSuiteName) -> WidgetSnapshot? {
-        guard let suiteName, let data = UserDefaults(suiteName: suiteName)?.data(forKey: snapshotKey) else { return nil }
+        guard let suiteName = accessibleSuite(suiteName), let data = UserDefaults(suiteName: suiteName)?.data(forKey: snapshotKey) else { return nil }
         return try? JSONDecoder().decode(WidgetSnapshot.self, from: data)
     }
 }

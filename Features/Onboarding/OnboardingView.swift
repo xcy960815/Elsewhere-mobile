@@ -113,23 +113,27 @@ struct OnboardingView: View {
                 }
                 Text(record.endpointHost).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
-            Picker("连接通道", selection: Binding(get: { store.settings.channelMode }, set: { mode in
-                working = true
-                Task {
-                    await store.updateSettings {
-                        $0.channelMode = mode
-                        if mode == .builtInTunnel { $0.autoDisconnectTunnel = true }
+            if store.capabilities.hasBuiltInTunnel {
+                Picker("连接通道", selection: Binding(get: { store.settings.channelMode }, set: { mode in
+                    working = true
+                    Task {
+                        await store.updateSettings {
+                            $0.channelMode = mode
+                            if mode == .builtInTunnel { $0.autoDisconnectTunnel = true }
+                        }
+                        working = false
                     }
-                    working = false
+                })) {
+                    Text("已有路由（推荐）").tag(ChannelMode.existingRoute)
+                    Text("内置回环通道").tag(ChannelMode.builtInTunnel)
                 }
-            })) {
-                Text("已有路由（推荐）").tag(ChannelMode.existingRoute)
-                Text("内置回环通道").tag(ChannelMode.builtInTunnel)
+                .pickerStyle(.segmented)
+                Text(store.settings.channelMode == .existingRoute ? "使用已配置的路由连接设备，可与提供目标路由的代理 App 共存。"
+                    : "首次使用需批准系统 VPN 配置。操作结束后自动断开本次启动的通道。")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            } else {
+                ExistingRouteInfo()
             }
-            .pickerStyle(.segmented)
-            Text(store.settings.channelMode == .existingRoute ? "使用已配置的路由连接设备，可与提供目标路由的代理 App 共存。"
-                : "首次使用需批准系统 VPN 配置。操作结束后自动断开本次启动的通道。")
-                .font(.subheadline).foregroundStyle(.secondary)
             Button("测试连接") {
                 guard let record else { return }
                 working = true
@@ -147,7 +151,7 @@ struct OnboardingView: View {
 
     @ViewBuilder private var alternatives: some View {
         Button("稍后再说", action: finish)
-        Button("进入演示模式") {
+        Button("开启演示模式") {
             Task {
                 await store.switchToDemo(true)
                 if store.isDemo { dismiss() }

@@ -22,15 +22,20 @@ enum PairingInboxError: LocalizedError, Equatable, Sendable {
 }
 
 struct PairingInbox: Sendable {
-    static let appGroupID = "group.com.elsewhere.mobile.import"
+    static var appGroupID: String { AppIdentifiers.current.importAppGroup ?? "group.com.elsewhere.mobile.import" }
     static let maxFileBytes = 512 * 1024
     static let expirationInterval: TimeInterval = 600
 
     private let directory: URL?
     private let now: @Sendable () -> Date
 
-    init(directory: URL? = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
-             .appending(path: "PairingInbox", directoryHint: .isDirectory),
+    private static var defaultDirectory: URL? {
+        guard AppIdentifiers.current.importAppGroup != nil else { return nil }
+        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
+            .appending(path: "PairingInbox", directoryHint: .isDirectory)
+    }
+
+    init(directory: URL? = PairingInbox.defaultDirectory,
          now: @escaping @Sendable () -> Date = Date.init) {
         self.directory = directory
         self.now = now

@@ -35,6 +35,7 @@ struct MapView: View {
     @State private var notFound = false
     @State private var lookup: Task<Void, Never>?
     @FocusState private var searchFocused: Bool
+    let openOnboarding: () -> Void
 
     private var displayName: String {
         let name = pin?.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -229,6 +230,11 @@ struct MapView: View {
                 .simultaneousGesture(DragGesture().onEnded { drag in
                     withAnimation { expanded = drag.translation.height < 0 }
                 })
+                if store.needsPairingSetup {
+                    Text("尚未配置设备，暂时无法应用所选位置。")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    PairingSetupActions(setupTitle: "配置设备", openOnboarding: openOnboarding)
+                }
                 if expanded {
                     if let pin {
                         TextField("地点名称", text: Binding(get: { self.pin?.name ?? "" }, set: { self.pin?.name = $0 }),

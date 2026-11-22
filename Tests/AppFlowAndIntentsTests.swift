@@ -24,6 +24,27 @@ private actor ChangingExit: HTTPDataTransport {
 
 final class AppFlowAndIntentsTests: XCTestCase {
     @MainActor
+    func testSkippedSetupWithNoPairingCanEnterDemo() async {
+        let demo = AppEnvironment.demo()
+        let env = AppEnvironment(engine: CommandIO([]), pairingStore: demo.pairingStore, tunnel: demo.tunnelCoordinator,
+            stateStore: demo.stateStore, exitService: demo.exitService, notifier: demo.notifier)
+        let store = AppStore(environment: env)
+        await store.load()
+        await store.completeOnboarding()
+        XCTAssertFalse(store.needsOnboarding)
+        XCTAssertTrue(store.needsPairingSetup)
+        XCTAssertFalse(store.canOperate)
+
+        let preferences = AppEnvironment.modePreferences
+        let previousMode = preferences.object(forKey: "ElsewhereDemoMode")
+        defer { preferences.set(previousMode, forKey: "ElsewhereDemoMode") }
+        await store.switchToDemo(true)
+        XCTAssertTrue(store.isDemo)
+        XCTAssertFalse(store.needsPairingSetup)
+        XCTAssertTrue(store.canOperate)
+    }
+
+    @MainActor
     func testLoadDemoDeviceAndTokyoExit() async {
         let store = AppStore(environment: .demo())
         await store.load()
@@ -37,8 +58,10 @@ final class AppFlowAndIntentsTests: XCTestCase {
     func testColdFollowSamplesBeforeTheFirstProbeTunnel() async throws {
         let demo = AppEnvironment.demo(), io = CommandIO([#"{"ip":"192.0.2.8","city":"Tokyo","loc":"35,139"}"#])
         let tunnel = TunnelCoordinator(adapter: CommandTunnel(io: io))
+        let tunnelCapable = AppCapabilities(hasBuiltInTunnel: true, resolvedTunnelProviderBundleID: "com.elsewhere.mobile.tunnel",
+                                            hasSnapshotAppGroup: false, hasImportAppGroup: false)
         let env = AppEnvironment(engine: demo.engine, pairingStore: demo.pairingStore, tunnel: tunnel,
-            stateStore: demo.stateStore, exitService: ExitIPService(transport: io), notifier: demo.notifier)
+            stateStore: demo.stateStore, exitService: ExitIPService(transport: io), notifier: demo.notifier, capabilities: tunnelCapable)
         try await env.stateStore.saveSettings(AppSettings(channelMode: .builtInTunnel))
         let store = AppStore(environment: env)
         let entered = XCTestExpectation(description: "快捷指令正在采样出口")
@@ -96,6 +119,7 @@ final class AppFlowAndIntentsTests: XCTestCase {
         XCTAssertEqual(inbox.pendingItems().map(\.id), [invalid])
         XCTAssertEqual(store.readyDevices, [phone])
         XCTAssertFalse(store.needsOnboarding)
+        XCTAssertFalse(store.needsPairingSetup)
     }
 
     @MainActor

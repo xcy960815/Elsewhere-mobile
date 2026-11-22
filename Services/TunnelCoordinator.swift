@@ -18,17 +18,27 @@ extension TunnelProviderAdapter {
 }
 
 struct SystemTunnelProviderAdapter: TunnelProviderAdapter {
-    private let bundleIdentifier = "com.elsewhere.mobile.tunnel"
+    private let providerBundleIdentifier: String?
+    private let isAvailable: Bool
+
+    init(providerBundleIdentifier: String? = AppCapabilities.current.resolvedTunnelProviderBundleID,
+         isAvailable: Bool = AppCapabilities.current.hasBuiltInTunnel) {
+        self.providerBundleIdentifier = providerBundleIdentifier
+        self.isAvailable = isAvailable && providerBundleIdentifier != nil
+    }
+
     private let sessionKey = "ElsewhereTunnelSessionID"
-    var hasPendingRecovery: Bool { UserDefaults.standard.string(forKey: sessionKey) != nil }
+    var hasPendingRecovery: Bool { isAvailable && UserDefaults.standard.string(forKey: sessionKey) != nil }
 
     private func installedManager() async throws -> NETunnelProviderManager? {
-        try await NETunnelProviderManager.loadAllFromPreferences().first {
-            ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == bundleIdentifier
+        guard isAvailable, let providerBundleIdentifier else { return nil }
+        return try await NETunnelProviderManager.loadAllFromPreferences().first {
+            ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == providerBundleIdentifier
         }
     }
 
     func currentStatus() async -> TunnelConnectionStatus {
+        guard isAvailable else { return .unavailable }
         do {
             guard let manager = try await installedManager() else { return .disconnected }
             switch manager.connection.status {
@@ -45,18 +55,19 @@ struct SystemTunnelProviderAdapter: TunnelProviderAdapter {
     }
 
     func connectedPeerHost() async throws -> String? {
+        guard isAvailable else { return nil }
         let configuration = try await installedManager()?.protocolConfiguration as? NETunnelProviderProtocol
         return configuration?.providerConfiguration?["peerAddress"] as? String ?? LoopbackTarget.defaultPeer
     }
 
     func start(targetHost: String) async throws {
-        guard LoopbackTarget.addressBytes(targetHost) != nil else { throw NEVPNError(.configurationInvalid) }
+        guard isAvailable, let providerBundleIdentifier, LoopbackTarget.addressBytes(targetHost) != nil else { throw NEVPNError(.configurationInvalid) }
         let manager = try await installedManager() ?? NETunnelProviderManager()
         let configuration = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
         if !manager.isEnabled || configuration.includeAllNetworks || configuration.serverAddress != targetHost
             || configuration.providerConfiguration?["peerAddress"] as? String != targetHost {
             guard [.invalid, .disconnected].contains(manager.connection.status) else { throw NEVPNError(.connectionFailed) }
-            configuration.providerBundleIdentifier = bundleIdentifier
+            configuration.providerBundleIdentifier = providerBundleIdentifier
             configuration.serverAddress = targetHost
             configuration.providerConfiguration = ["peerAddress": targetHost]
             configuration.includeAllNetworks = false

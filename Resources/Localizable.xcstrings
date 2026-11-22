@@ -1,6 +1,230 @@
 {
   "sourceLanguage" : "zh-Hans",
   "strings" : {
+    "构建版本" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Build edition"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "构建版本"
+          }
+        }
+      }
+    },
+    "包标识" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bundle identifier"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "包标识"
+          }
+        }
+      }
+    },
+    "完整版" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Full edition"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完整版"
+          }
+        }
+      }
+    },
+    "部分能力可用" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Some capabilities available"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "部分能力可用"
+          }
+        }
+      }
+    },
+    "精简侧载版" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lightweight sideload edition"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "精简侧载版"
+          }
+        }
+      }
+    },
+    "尚未配置真机" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No device configured"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未配置真机"
+          }
+        }
+      }
+    },
+    "真机改定位需要先导入配对文件并接通路由；如果想立即在手机上体验全部功能，可直接开启演示模式。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "To change a device’s location, import its pairing file and connect to it over a working route. Turn on demo mode to try all the features on this phone now."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "真机改定位需要先导入配对文件并接通路由；如果想立即在手机上体验全部功能，可直接开启演示模式。"
+          }
+        }
+      }
+    },
+    "当前处于演示模式" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Demo mode is on"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前处于演示模式"
+          }
+        }
+      }
+    },
+    "所有定位操作仅作用在模拟设备上，不会修改本机真实定位。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Location changes apply only to the simulated device. This device keeps its real location."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所有定位操作仅作用在模拟设备上，不会修改本机真实定位。"
+          }
+        }
+      }
+    },
+    "切换真机模式" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Switch to Device Mode"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换真机模式"
+          }
+        }
+      }
+    },
+    "尚未配置设备，暂时无法应用所选位置。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Set up a device or turn on demo mode to apply the selected location."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未配置设备，暂时无法应用所选位置。"
+          }
+        }
+      }
+    },
+    "配置设备" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Set Up Device"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配置设备"
+          }
+        }
+      }
+    },
+    "尚未配置目标设备，无法直接应用城市定位。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Set up a target device before applying a city’s location."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未配置目标设备，无法直接应用城市定位。"
+          }
+        }
+      }
+    },
+    "连接本机时，可从 App Store 免费安装 LocalDevVPN，或使用已安装的 StosVPN。开启 VPN，确认回环对端与目标 IP 一致（默认 %@），再回到配置向导点「测试连接」。连接同一局域网内的其他设备时，请填写该设备的 IP。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "To connect to this device, get LocalDevVPN for free from the App Store or use StosVPN if already installed. Turn on the VPN and check that its loopback peer matches the target IP (default %@). Return to the setup guide and tap Test Connection. For another device on the same local network, enter that device’s IP."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接本机时，可从 App Store 免费安装 LocalDevVPN，或使用已安装的 StosVPN。开启 VPN，确认回环对端与目标 IP 一致（默认 %@），再回到配置向导点「测试连接」。连接同一局域网内的其他设备时，请填写该设备的 IP。"
+          }
+        }
+      }
+    },
     "\n演示配对仅供本次演示使用。" : {
       "localizations" : {
         "en" : {
@@ -4948,18 +5172,18 @@
         }
       }
     },
-    "进入演示模式" : {
+    "开启演示模式" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Enter Demo Mode"
+            "value" : "Turn On Demo Mode"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "进入演示模式"
+            "value" : "开启演示模式"
           }
         }
       }

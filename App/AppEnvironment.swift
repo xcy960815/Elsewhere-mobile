@@ -5,7 +5,8 @@ import UserNotifications
 
 @MainActor
 final class AppEnvironment: ObservableObject {
-    static let modePreferences = UserDefaults(suiteName: "com.elsewhere.mobile.mode")!
+    static let modePreferences = UserDefaults(suiteName: AppIdentifiers.current.modePreferencesSuite) ?? .standard
+    let capabilities: AppCapabilities
     let engine: any LocationEngineProtocol
     let pairingStore: PairingStore
     let tunnelCoordinator: TunnelCoordinator
@@ -19,7 +20,8 @@ final class AppEnvironment: ObservableObject {
     var abiVersion: UInt32 { engine.abiVersion }
 
     init(engine: any LocationEngineProtocol, pairingStore: PairingStore, tunnel: TunnelCoordinator,
-         stateStore: AppStateStore, exitService: ExitIPService, notifier: Notifier) {
+         stateStore: AppStateStore, exitService: ExitIPService, notifier: Notifier, capabilities: AppCapabilities = .current) {
+        self.capabilities = capabilities
         self.engine = engine
         self.pairingStore = pairingStore
         tunnelCoordinator = tunnel
@@ -57,7 +59,7 @@ final class AppEnvironment: ObservableObject {
             paths.pathUpdateHandler = { [tunnelCoordinator] _ in
                 Task { if !(await tunnelCoordinator.isSwitchingChannel) { signal.yield(()) } }
             }
-            paths.start(queue: DispatchQueue(label: "com.elsewhere.mobile.foreground-path"))
+            paths.start(queue: DispatchQueue(label: AppIdentifiers.current.hostBundleID + ".foreground-path"))
             let timer = Task {
                 while !Task.isCancelled {
                     try await Task.sleep(for: .seconds(30))
@@ -138,12 +140,15 @@ private actor DemoTunnel: TunnelProviderAdapter {
 
 private struct DemoExit: HTTPDataTransport {
     func data(for request: URLRequest, proxy: ExitProxyAddress?) async throws -> (Data, HTTPURLResponse) {
-        let url = request.url!
+        guard let url = request.url else { throw URLError(.badURL) }
         let city = String(localized: "东京")
         let payload = url.path == "/json"
             ? #"{"ip":"203.0.113.24","city":"\#(city)","country":"JP","loc":"35.6812,139.7671","org":"AS64496 Demo"}"#
             : "203.0.113.24"
-        return (Data(payload.utf8), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        guard let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil) else {
+            throw URLError(.badServerResponse)
+        }
+        return (Data(payload.utf8), response)
     }
 }
 
@@ -160,8 +165,12 @@ extension AppSettings {
     }
 }
 
+private extension DeviceID {
+    init(pairingID: UUID) { rawValue = pairingID.uuidString }
+}
+
 extension StoredPairingRecord {
-    var probeID: DeviceID { udid ?? DeviceID(rawValue: id.uuidString)! }
+    var probeID: DeviceID { udid ?? DeviceID(pairingID: id) }
 }
 
 extension DeviceConnectionState {
