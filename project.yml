@@ -1,0 +1,146 @@
+name: ElsewhereMobile
+options:
+  bundleIdPrefix: com.elsewhere.mobile
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    TARGETED_DEVICE_FAMILY: "1,2"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  ElsewhereMobile:
+    type: application
+    platform: iOS
+    sources: [App, Domain, Engine, Services, DesignSystem, Features, Intents]
+    dependencies:
+      - framework: build/ElsewhereCore.xcframework
+        embed: false
+      - target: ElsewhereWidgets
+        embed: true
+      - target: ElsewhereTunnel
+        embed: true
+      - target: ElsewherePairingImport
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.elsewhere.mobile
+        "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]": "-"
+        CODE_SIGN_ENTITLEMENTS: App/ElsewhereMobile.entitlements
+    info:
+      path: build/ElsewhereMobile-Info.plist
+      properties:
+        CFBundleDisplayName: Elsewhere
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        NSLocalNetworkUsageDescription: 通过本地网络连接你已配对的设备，以设置或清除模拟位置。
+        UIBackgroundModes: [fetch]
+        BGTaskSchedulerPermittedIdentifiers: [com.elsewhere.mobile.exit-refresh]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: 设备配对记录
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.elsewhere.mobile.mobiledevicepairing
+              - com.apple.property-list
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.elsewhere.mobile.mobiledevicepairing
+            UTTypeDescription: 设备配对记录
+            UTTypeConformsTo: [com.apple.property-list]
+            UTTypeTagSpecification:
+              public.filename-extension: [mobiledevicepairing]
+
+  ElsewhereWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Widgets
+      - path: Intents/ElsewhereIntents.swift
+      - path: Domain/Coordinate.swift
+      - path: Domain/Place.swift
+      - path: Domain/DeviceModels.swift
+      - path: Domain/ExitProxy.swift
+      - path: Services/AppStateStore.swift
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.elsewhere.mobile.widgets
+      CODE_SIGN_ENTITLEMENTS: Widgets/ElsewhereWidgets.entitlements
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) ELSEWHERE_WIDGET_EXTENSION"
+    info:
+      path: build/ElsewhereWidgets-Info.plist
+      properties:
+        CFBundleDisplayName: Elsewhere 定位
+        CFBundleShortVersionString: "1.0.0"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
+  ElsewhereTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - TunnelExtension
+      - path: Services/LoopbackPacket.swift
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.elsewhere.mobile.tunnel
+      CODE_SIGN_ENTITLEMENTS: TunnelExtension/ElsewhereTunnel.entitlements
+    info:
+      path: build/ElsewhereTunnel-Info.plist
+      properties:
+        CFBundleDisplayName: Elsewhere 通道
+        CFBundleShortVersionString: "1.0.0"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+
+  ElsewherePairingImport:
+    type: app-extension
+    platform: iOS
+    sources:
+      - PairingImportExtension
+      - path: Services/PairingInbox.swift
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.elsewhere.mobile.pairingimport
+      CODE_SIGN_ENTITLEMENTS: PairingImportExtension/ElsewherePairingImport.entitlements
+    info:
+      path: build/ElsewherePairingImport-Info.plist
+      properties:
+        CFBundleDisplayName: 导入 Elsewhere 配对记录
+        CFBundleShortVersionString: "1.0.0"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsFileWithMaxCount: 1
+
+  ElsewhereMobileTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: ElsewhereMobile
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+
+schemes:
+  ElsewhereMobile:
+    build:
+      targets:
+        ElsewhereMobile: all
+    test:
+      targets: [ElsewhereMobileTests]

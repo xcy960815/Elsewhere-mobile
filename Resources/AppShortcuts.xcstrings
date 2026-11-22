@@ -1,0 +1,73 @@
+{
+  "sourceLanguage" : "zh-Hans",
+  "strings" : {
+    "用 ${applicationName} 恢复真实定位" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringSet" : {
+            "state" : "translated",
+            "values" : [
+              "Use real location with ${applicationName}"
+            ]
+          }
+        },
+        "zh-Hans" : {
+          "stringSet" : {
+            "state" : "translated",
+            "values" : [
+              "用 ${applicationName} 恢复真实定位"
+            ]
+          }
+        }
+      }
+    },
+    "用 ${applicationName} 改到 ${city}" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringSet" : {
+            "state" : "translated",
+            "values" : [
+              "Move to ${city} with ${applicationName}",
+              "${applicationName} move to favorite city"
+            ]
+          }
+        },
+        "zh-Hans" : {
+          "stringSet" : {
+            "state" : "translated",
+            "values" : [
+              "用 ${applicationName} 改到 ${city}",
+              "${applicationName} 改到常用城市"
+            ]
+          }
+        }
+      }
+    },
+    "用 ${applicationName} 跟随代理出口" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringSet" : {
+            "state" : "translated",
+            "values" : [
+              "Follow proxy exit with ${applicationName}",
+              "${applicationName} follow exit"
+            ]
+          }
+        },
+        "zh-Hans" : {
+          "stringSet" : {
+            "state" : "translated",
+            "values" : [
+              "用 ${applicationName} 跟随代理出口",
+              "${applicationName} 跟随出口"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}
