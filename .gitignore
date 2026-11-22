@@ -6,3 +6,4 @@ xcuserdata/
 *.xcresult
 DerivedData/
 /*.swiftmodule
+Config/Signing.local.xcconfig

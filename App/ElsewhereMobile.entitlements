@@ -4,8 +4,8 @@
 <dict>
     <key>com.apple.security.application-groups</key>
     <array>
-        <string>group.com.elsewhere.mobile.snapshot</string>
-        <string>group.com.elsewhere.mobile.import</string>
+        <string>$(SNAPSHOT_APP_GROUP)</string>
+        <string>$(IMPORT_APP_GROUP)</string>
     </array>
     <key>com.apple.developer.networking.networkextension</key>
     <array>

@@ -1,0 +1,10 @@
+// 复制为 Signing.local.xcconfig，取消其中一组的注释。
+// Copy to Signing.local.xcconfig and uncomment one example.
+
+// 免费个人账号 / Personal Team (ElsewhereMobileFree)
+// DEVELOPMENT_TEAM = ABC1234567
+// FREE_APP_BUNDLE_ID = net.example.elsewhere.personal
+
+// 付费开发者账号 / Developer Program (ElsewhereMobile)
+// DEVELOPMENT_TEAM = DEF1234567
+// APP_BUNDLE_ID = net.example.elsewhere

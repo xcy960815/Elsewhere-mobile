@@ -1,0 +1,6 @@
+DEVELOPMENT_TEAM =
+APP_BUNDLE_ID = com.elsewhere.mobile
+FREE_APP_BUNDLE_ID = $(APP_BUNDLE_ID)
+SNAPSHOT_APP_GROUP = group.$(APP_BUNDLE_ID).snapshot
+IMPORT_APP_GROUP = group.$(APP_BUNDLE_ID).import
+#include? "Signing.local.xcconfig"
