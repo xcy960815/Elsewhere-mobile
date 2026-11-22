@@ -59,10 +59,30 @@ xcodebuild -project ElsewhereMobile.xcodeproj -scheme ElsewhereMobile \
   -destination 'platform=iOS Simulator,name=iPhone 16 Pro,OS=latest' build test
 ```
 
-真机侧载时，在 Xcode 打开生成的工程，为宿主与扩展选择自己的 Team、可用的 Bundle ID 和匹配的签名描述文件，选中设备运行。更换标识符时，同步修改源码引用的通道 Bundle ID 和 App Group ID。
+### 选择签名方式
 
-- **内置通道版。** 宿主和 `ElsewhereTunnel` 均需 `com.apple.developer.networking.networkextension` 中的 `packet-tunnel-provider`。另外两个扩展通过 App Groups 共享数据。宿主与 Widget 共享 `group.com.elsewhere.mobile.snapshot`，与共享导入扩展共享 `group.com.elsewhere.mobile.import`。
-- **仅用方案 A。** 如果个人免费 Team 的描述文件没有 Network Extension 权限，可在自己的 `project.yml` 中移除 `ElsewhereTunnel` target 和宿主对它的嵌入依赖，并从宿主 entitlement 移除 Network Extension，再生成工程。保留 Widget 或共享导入仍需相应 App Group 的签名权限。安装后选择「已有路由」。[Apple 账号能力表](https://developer.apple.com/help/account/reference/supported-capabilities-ios/)
+| 使用场景 | Scheme | 安装后可用的通道 |
+| --- | --- | --- |
+| 免费个人 Apple ID | `ElsewhereMobileFree` | 已有路由。使用 LocalDevVPN、StosVPN 或局域网，在 App 内从「文件」导入配对记录。此目标只占一个 App ID，无扩展或 App Group 依赖。 |
+| 有相应能力的付费开发者账号 | `ElsewhereMobile` | 已有路由、内置回环通道，另含 Widget 和共享导入扩展。 |
+| AltStore、SideStore、Sideloadly 或其他自签工具 | 推荐免费版 IPA | 由侧载工具完成签名。App 根据安装包内实际的扩展和可访问的 App Group 选择功能。 |
+
+从 Xcode 运行时，把 `Config/Signing.local.xcconfig.example` 复制为 `Config/Signing.local.xcconfig`，选一组示例，填入自己的 `DEVELOPMENT_TEAM` 和唯一的 `APP_BUNDLE_ID`。免费版也可单独指定 `FREE_APP_BUNDLE_ID`。完整版会同步派生三个扩展的 Bundle ID、两个 App Group 和运行时标识，Swift 和 entitlements 均由同一配置驱动。宿主与隧道扩展的开发描述文件需要授权 Packet Tunnel，宿主、Widget 与共享导入扩展也各自需要对应的 App Group。[Apple 签名与权限说明](https://developer.apple.com/documentation/bundleresources/diagnosing-issues-with-entitlements)
+
+### 使用侧载脚本
+
+准备好真机 XCFramework 后执行以下命令。仅构建真机切片可使用 `scripts/build-rust-ios.sh --device`。首次使用可运行 `chmod +x scripts/sideload.sh`，也可以用 `bash scripts/sideload.sh` 调用。
+
+```sh
+./scripts/sideload.sh --mode free --check
+./scripts/sideload.sh --mode free --bundle-id net.example.myelsewhere --team ABC1234567 --install
+./scripts/sideload.sh --mode full --open
+./scripts/sideload.sh --mode free --ipa
+```
+
+将示例 Bundle ID 和 Team ID 换为自己的值。`--check` 会列出可用证书、Team ID、真机 UDID 和每个目标的本地描述文件匹配情况。连接多台设备时，为 `--install` 加上 `--device <UDID>`。未配置 Team 且只有一张有效开发证书时，脚本会从证书的 OU 自动选择 Team。本地描述文件齐全时优先离线签名，否则由 Xcode 联网申请并安装到设备。
+
+`--ipa` 无需登录 Apple 账号，产物为 `build/sideload/ElsewhereMobile-free-unsigned.ipa`，可交给侧载工具签名。脚本在 `build/sideload/project/` 中生成用于构建或打开的源码副本，每次运行时同步。持久签名设置保存在仓库忽略的 `Config/Signing.local.xcconfig`。免费版和完整版默认共用 Bundle ID；需要并排安装时，为免费版单独设置 `FREE_APP_BUNDLE_ID`。更换 Bundle ID 或签名团队后，原有的配对密钥可能无法读取，请保留受保护的原始配对文件。
 
 ## 常见问题
 

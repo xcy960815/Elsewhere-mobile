@@ -59,10 +59,30 @@ xcodebuild -project ElsewhereMobile.xcodeproj -scheme ElsewhereMobile \
   -destination 'platform=iOS Simulator,name=iPhone 16 Pro,OS=latest' build test
 ```
 
-To sideload, open the generated project in Xcode. Select your team, available bundle IDs, and matching provisioning profiles for the host and extensions. Choose the device and run. If you change identifiers, update the tunnel bundle ID and App Group IDs referenced in the source as well.
+### Choose a signing mode
 
-- **With the built-in channel.** Both the host and `ElsewhereTunnel` need `com.apple.developer.networking.networkextension` with the value `packet-tunnel-provider`. App Groups serve the other two extensions. The host shares `group.com.elsewhere.mobile.snapshot` with the widget and `group.com.elsewhere.mobile.import` with the share extension.
-- **Option A only.** If a free Personal Team profile lacks Network Extension access, remove the `ElsewhereTunnel` target and its embedded dependency from the host in your own `project.yml`. Remove the Network Extension entitlement from the host and regenerate the project. Keeping the widget or share extension still requires signing access to its App Group. Select the existing route after installation. [Apple’s account capability table](https://developer.apple.com/help/account/reference/supported-capabilities-ios/)
+| Signing method | Scheme | Features on the device |
+| --- | --- | --- |
+| Free Personal Team | `ElsewhereMobileFree` | One App ID, with no extensions or App Groups. Import pairings from Files inside the app and connect over an existing LocalDevVPN, StosVPN, or LAN route. |
+| Paid team with the required capabilities | `ElsewhereMobile` | Existing routes, the built-in loopback tunnel, widgets, and the share extension. |
+| AltStore, SideStore, Sideloadly, or another signing tool | Free IPA recommended | The tool signs the IPA. The app checks the installed extensions and accessible App Groups at runtime. |
+
+For Xcode, copy `Config/Signing.local.xcconfig.example` to `Config/Signing.local.xcconfig`. Choose one example and supply your `DEVELOPMENT_TEAM` and a unique `APP_BUNDLE_ID`. You can set `FREE_APP_BUNDLE_ID` independently. The full scheme derives all three extension IDs, both App Groups, and the runtime identifiers from these settings. The host and tunnel profiles need Packet Tunnel access. The host, widget and share extension profiles each need their respective App Groups. [Apple’s guide to signing entitlements](https://developer.apple.com/documentation/bundleresources/diagnosing-issues-with-entitlements)
+
+### Use the sideload script
+
+Start with a device XCFramework. To build just the device slice, run `scripts/build-rust-ios.sh --device`. If needed, run `chmod +x scripts/sideload.sh` once or invoke the script with `bash scripts/sideload.sh`.
+
+```sh
+./scripts/sideload.sh --mode free --check
+./scripts/sideload.sh --mode free --bundle-id net.example.myelsewhere --team ABC1234567 --install
+./scripts/sideload.sh --mode full --open
+./scripts/sideload.sh --mode free --ipa
+```
+
+Replace the example bundle and team IDs with your own. `--check` reports signing identities, team IDs, device UDIDs and local profile coverage for each target. Pass `--device <UDID>` to `--install` when multiple devices are connected. With one valid development identity and no configured team, the script reads the team ID from the certificate’s OU. Installation tries local signing when profiles cover the selected device and targets, and requests automatic provisioning when needed.
+
+`--ipa` produces `build/sideload/ElsewhereMobile-free-unsigned.ipa` for your signing tool without an Apple login. The script refreshes its build copy in `build/sideload/project/` on each run and uses that project for `--open`. Persistent overrides live in the ignored `Config/Signing.local.xcconfig`. The free and full apps share a bundle ID by default. Set a distinct `FREE_APP_BUNDLE_ID` to install both. Keep your original pairing file secure, since a change of bundle ID or signing team can prevent access to existing pairing keys.
 
 ## Troubleshooting
 
