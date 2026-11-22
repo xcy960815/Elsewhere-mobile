@@ -1,0 +1,8 @@
+/build/
+/ElsewhereMobile.xcodeproj/
+/elsewhere-core/target/
+xcuserdata/
+.DS_Store
+*.xcresult
+DerivedData/
+/*.swiftmodule
