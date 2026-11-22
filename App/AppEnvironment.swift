@@ -47,7 +47,6 @@ final class AppEnvironment: ObservableObject {
                               stateStore: AppStateStore(), exitService: ExitIPService(), notifier: Notifier())
     }
 
-    // 服务的无界面轮询会丢弃检查结果。前台页面需要收到同一次检查的待确认事件和逐台回执。
     func monitorExit(context: @escaping @MainActor () -> (AppSettings, ExitProxyAddress?, [TargetDevice]),
                      receive: @escaping @MainActor (ExitRefreshOutcome) -> Void) -> Task<Void, Never> {
         Task {
@@ -94,29 +93,20 @@ final class AppEnvironment: ObservableObject {
         return result
     }
 
-    func checkTimeZone(record: AppliedLocationRecord?, device: TargetDevice?,
-                       publish: @escaping @MainActor (TimeZoneMatchResult) -> Void) -> Task<Void, Never>? {
-        publish(.unavailable)
-        guard let record, record.confidence != .unknownOutcome, let device, device.timeZoneID != nil else { return nil }
-        let delay = record.appliedAt.addingTimeInterval(60).timeIntervalSinceNow
-        if delay > 0 { publish(.withinGracePeriod) }
-        return Task {
-            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
-            guard !Task.isCancelled else { return }
-            let place = isDemo ? nil : await Geo.place(at: record.coordinate)
-            guard !Task.isCancelled else { return }
-            publish(TimeZoneService.evaluate(record: record, device: device, targetTimeZone: place?.zone))
-        }
+    func checkTimeZone(record: AppliedLocationRecord, device: TargetDevice) async -> TimeZoneMatchResult {
+        guard device.timeZoneID != nil else { return .unavailable }
+        let place = isDemo ? nil : await Geo.place(at: record.coordinate)
+        return TimeZoneService.evaluate(record: record, device: device, targetTimeZone: place?.zone)
     }
 
     func startFollowing(_ sample: ExitInfo?, latest: ExitInfo?, targets: [TargetDevice], settings: AppSettings,
                         onStage: @escaping StageReport) -> Task<(ExitInfo, BatchOutcome), Error> {
         Task {
             guard settings.exitFeaturesEnabled else {
-                throw EngineError(code: .cancelled, stage: "exit", message: "出口功能已关闭，请先在设置中开启。")
+                throw EngineError(code: .cancelled, stage: "exit", message: String(localized: "出口功能已关闭，请先在设置中开启。"))
             }
             if let sample, sample.sampledAt.timeIntervalSinceNow < -60 || latest.map({ $0.sampledAt > sample.sampledAt && $0.ip != sample.ip }) == true {
-                throw EngineError(code: .cancelled, stage: "exit", message: "这次出口变化已过期，请刷新出口后再跟随。")
+                throw EngineError(code: .cancelled, stage: "exit", message: String(localized: "这次出口变化已过期，请刷新出口后再跟随。"))
             }
             return try await commandService.followExit(prefetched: sample, targets: targets, settings: settings,
                                                        proxy: settings.parsedProxy.get(), onStage: onStage)
@@ -149,8 +139,9 @@ private actor DemoTunnel: TunnelProviderAdapter {
 private struct DemoExit: HTTPDataTransport {
     func data(for request: URLRequest, proxy: ExitProxyAddress?) async throws -> (Data, HTTPURLResponse) {
         let url = request.url!
+        let city = String(localized: "东京")
         let payload = url.path == "/json"
-            ? #"{"ip":"203.0.113.24","city":"东京","country":"JP","loc":"35.6812,139.7671","org":"AS64496 Demo"}"#
+            ? #"{"ip":"203.0.113.24","city":"\#(city)","country":"JP","loc":"35.6812,139.7671","org":"AS64496 Demo"}"#
             : "203.0.113.24"
         return (Data(payload.utf8), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
     }
@@ -176,16 +167,16 @@ extension StoredPairingRecord {
 extension DeviceConnectionState {
     var diagnosis: String {
         switch self {
-        case .unpaired: "尚未配对"
-        case .probing: "正在探测"
-        case .channelUnavailable(let detail): "通道不可用 · " + detail
-        case .notPaired(let detail): "配对失效 · " + detail
-        case .locked(let detail): "请先解锁设备 · " + detail
-        case .failed(let detail): "设备异常 · " + detail
-        case .developerModeOff: "请开启开发者模式"
-        case .preparingDDI: "正在准备开发者组件"
-        case .ready: "设备就绪"
-        case .operating: "正在操作"
+        case .unpaired: String(localized: "尚未配对")
+        case .probing: String(localized: "正在探测")
+        case .channelUnavailable(let detail): String(localized: "通道不可用 · ") + detail
+        case .notPaired(let detail): String(localized: "配对失效 · ") + detail
+        case .locked(let detail): String(localized: "请先解锁设备 · ") + detail
+        case .failed(let detail): String(localized: "设备异常 · ") + detail
+        case .developerModeOff: String(localized: "请开启开发者模式")
+        case .preparingDDI: String(localized: "正在准备开发者组件")
+        case .ready: String(localized: "设备就绪")
+        case .operating: String(localized: "正在操作")
         }
     }
 }
@@ -193,31 +184,35 @@ extension DeviceConnectionState {
 extension EngineOperationStage {
     var title: String {
         switch self {
-        case .connecting: "正在连接设备"
-        case .downloadingDDI: "正在下载开发者组件"
-        case .verifyingDDI: "正在校验开发者组件"
-        case .signingDDI: "正在签名开发者组件"
-        case .uploadingDDI: "正在传输开发者组件"
-        case .mountingDDI: "正在挂载开发者组件"
-        case .applyingLocation: "正在设置模拟位置"
-        case .clearingLocation: "正在恢复真实定位"
+        case .connecting: String(localized: "正在连接设备")
+        case .downloadingDDI: String(localized: "正在下载开发者组件")
+        case .verifyingDDI: String(localized: "正在校验开发者组件")
+        case .signingDDI: String(localized: "正在签名开发者组件")
+        case .uploadingDDI: String(localized: "正在传输开发者组件")
+        case .mountingDDI: String(localized: "正在挂载开发者组件")
+        case .applyingLocation: String(localized: "正在设置模拟位置")
+        case .clearingLocation: String(localized: "正在恢复真实定位")
         }
     }
 }
 
 extension BatchOutcome {
     func feedback(title: String) -> FeedbackMessage {
-        let errors = failed.map { "\($0.device.name) · \($0.error.message)" } + unknown.map { "\($0.name) · 设备回执缺失，定位结果待确认" }
-        var details = succeeded.map { "\($0.name) · \(records[$0.id]?.name ?? "已恢复真实定位")" }
+        let errors = failed.map { String(localized: "\($0.device.name) · \($0.error.message)") }
+            + unknown.map { String(localized: "\($0.name) · 设备回执缺失，定位结果待确认") }
+        var details = succeeded.map { device in
+            let location = records[device.id]?.name ?? String(localized: "已恢复真实定位")
+            return String(localized: "\(device.name) · \(location)")
+        }
         if succeeded.contains(where: { records[$0.id] == nil && $0.kind == "iPad" && $0.cellular == false }) {
-            details.append("Wi-Fi iPad 重新取得真实位置可能需要片刻。")
+            details.append(String(localized: "Wi-Fi iPad 重新取得真实位置可能需要片刻。"))
         }
         if !errors.isEmpty {
             let logs = failed.map { [$0.error.stage, $0.error.rawDetail ?? $0.error.message].joined(separator: " · ") }
-            return .init(kind: .failure, title: "部分或全部设备未确认成功", detail: (details + errors).joined(separator: "\n"),
-                         rawLog: (logs + unknown.map { "\($0.name) · 未收到回执" }).joined(separator: "\n"))
+            return .init(kind: .failure, title: String(localized: "部分或全部设备未确认成功"), detail: (details + errors).joined(separator: "\n"),
+                         rawLog: (logs + unknown.map { String(localized: "\($0.name) · 未收到回执") }).joined(separator: "\n"))
         }
-        return succeeded.isEmpty ? .init(kind: .info, title: "本次未更改定位") :
+        return succeeded.isEmpty ? .init(kind: .info, title: String(localized: "本次未更改定位")) :
             .init(kind: .success, title: title, detail: details.joined(separator: "\n"))
     }
 }

@@ -10,10 +10,17 @@ enum AppLanguage: Sendable {
 }
 
 struct OSMPlace: Identifiable, Equatable, Sendable {
-    let id = UUID()
+    let id: UUID
     let name: String
     let detail: String
     let coordinate: WGS84Coordinate
+
+    init(id: UUID = UUID(), name: String, detail: String, coordinate: WGS84Coordinate) {
+        self.id = id
+        self.name = name
+        self.detail = detail
+        self.coordinate = coordinate
+    }
 }
 
 actor OpenStreetMapClient {
@@ -134,7 +141,18 @@ enum Geo: Sendable {
     static func timeZone(for coordinate: WGS84Coordinate) async -> TimeZone? {
         await place(at: coordinate)?.zone ?? TimeZoneService.nearestZone(to: coordinate)
     }
-    static func placeName(for coordinate: WGS84Coordinate) async -> String? { await place(at: coordinate)?.name }
+
+    static func placeName(for coordinate: WGS84Coordinate, isDemo: Bool,
+                          reverseLookup: @Sendable (WGS84Coordinate) async -> String? = { await Geo.place(at: $0)?.name }) async -> String? {
+        guard !Task.isCancelled else { return nil }
+        guard isDemo else { return await reverseLookup(coordinate) }
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        func distance(to place: Place) -> CLLocationDistance {
+            location.distance(from: CLLocation(latitude: place.coordinate.latitude, longitude: place.coordinate.longitude))
+        }
+        return Place.defaults.filter { $0.coordinate.isSameSpot(as: coordinate) }
+            .min { distance(to: $0) < distance(to: $1) }?.displayName
+    }
 
     // 时区提示需要区分地理编码结果与离线估算，可将这里的原始 zone 交给 evaluate。
     static func place(at coordinate: WGS84Coordinate) async -> (zone: TimeZone?, name: String?)? {
@@ -160,23 +178,40 @@ enum Geo: Sendable {
     }
 }
 
+enum SearchMatch: Equatable, Sendable {
+    case coordinate(WGS84Coordinate)
+    case osm(OSMPlace)
+    case apple(name: String, coordinate: WGS84Coordinate)
+}
+
 @MainActor
 final class PlaceSearchStore: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
+    var isDemo: Bool {
+        didSet {
+            guard oldValue != isDemo else { return }
+            if query.isEmpty { clear() } else { query = "" }
+        }
+    }
+
     @Published var query = "" {
         didSet {
             guard query != oldValue else { return }
             clear()
             let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return }
-            let completer = MKLocalSearchCompleter()
-            self.completer = completer
-            completer.delegate = self
-            completer.resultTypes = [.address, .pointOfInterest]
-            completer.queryFragment = text
-            suggestion = Task { [weak self, client] in
+            if case .success = CoordinateParser.parse(text) { return }
+            if isDemo {
+                osmResults = demoMatches(text)
+                return
+            }
+            // A partially typed latitude or coordinate pair can already disclose the location.
+            if text.contains(where: { ".,，".contains($0) }),
+               text.allSatisfy({ $0.isNumber || $0.isWhitespace || "+-.,，".contains($0) }) { return }
+            completer = makeCompleter(text, self)
+            suggestion = Task { [weak self, suggest] in
                 do {
                     try await Task.sleep(for: .milliseconds(400))
-                    let places = try await client.suggest(text)
+                    let places = try await suggest(text)
                     if !Task.isCancelled { self?.osmResults = places }
                 } catch {
                     if !Task.isCancelled { self?.photonError = error.localizedDescription }
@@ -189,19 +224,57 @@ final class PlaceSearchStore: NSObject, ObservableObject, MKLocalSearchCompleter
     @Published private(set) var appleError: String?
     @Published private(set) var photonError: String?
     @Published private(set) var nominatimError: String?
-    @Published private var localSearch: (search: MKLocalSearch, finish: () -> Void)?
-    @Published private var osmLookup: Task<OSMPlace?, Error>?
-    var searching: Bool { localSearch != nil || osmLookup != nil }
+    @Published private var lookup: Task<SearchMatch?, Never>?
+    var searching: Bool { lookup != nil }
     var hasSuggestions: Bool { !results.isEmpty || !osmResults.isEmpty }
 
-    private let client: OpenStreetMapClient
+    typealias AppleLookup = @MainActor (MKLocalSearch.Request, String) async throws -> (String, CLLocationCoordinate2D)?
+    typealias CompleterFactory = @MainActor (String, any MKLocalSearchCompleterDelegate) -> MKLocalSearchCompleter
+    private let makeCompleter: CompleterFactory
+    private let suggest: @MainActor (String) async throws -> [OSMPlace]
+    private let lookUpOSM: @MainActor (String) async throws -> OSMPlace?
+    private let appleLookup: AppleLookup
     private var completer: MKLocalSearchCompleter?
     private var suggestion: Task<Void, Never>?
 
-    init(client: OpenStreetMapClient = .shared) { self.client = client }
+    init(isDemo: Bool = false,
+         makeCompleter: @escaping CompleterFactory = { text, delegate in
+             let completer = MKLocalSearchCompleter()
+             completer.delegate = delegate
+             completer.resultTypes = [.address, .pointOfInterest]
+             completer.queryFragment = text
+             return completer
+         },
+         suggest: @escaping @MainActor (String) async throws -> [OSMPlace] = { try await OpenStreetMapClient.shared.suggest($0) },
+         lookUpOSM: @escaping @MainActor (String) async throws -> OSMPlace? = { try await OpenStreetMapClient.shared.search($0).first },
+         appleLookup: @escaping AppleLookup = PlaceSearchStore.searchApple) {
+        self.isDemo = isDemo
+        self.makeCompleter = makeCompleter
+        self.suggest = suggest
+        self.lookUpOSM = lookUpOSM
+        self.appleLookup = appleLookup
+    }
+
+    // The final UUID byte is the stable city key assigned in Place.defaults.
+    private static let demoKeywords: [UInt8: [String]] = [
+        1: ["Berlin", "柏林"], 2: ["Frankfurt", "法兰克福"], 3: ["London", "伦敦"],
+        4: ["Paris", "巴黎"], 5: ["Amsterdam", "阿姆斯特丹"], 6: ["New York", "纽约"],
+        7: ["Los Angeles", "洛杉矶"], 8: ["San Francisco", "旧金山"], 9: ["Tokyo", "东京"],
+        10: ["Hong Kong", "香港"], 11: ["Singapore", "新加坡"],
+    ]
+
+    private func demoMatches(_ text: String) -> [OSMPlace] {
+        Place.defaults.compactMap { place in
+            let name = place.displayName
+            let aliases = Self.demoKeywords[place.id.uuid.15] ?? []
+            guard name.localizedStandardContains(text) || aliases.contains(where: { $0.localizedStandardContains(text) }) else { return nil }
+            return OSMPlace(id: place.id, name: name, detail: "", coordinate: place.coordinate)
+        }
+    }
 
     func clear() {
-        cancelLookup()
+        lookup?.cancel()
+        lookup = nil
         suggestion?.cancel()
         completer?.cancel()
         completer = nil
@@ -210,14 +283,6 @@ final class PlaceSearchStore: NSObject, ObservableObject, MKLocalSearchCompleter
         appleError = nil
         photonError = nil
         nominatimError = nil
-    }
-
-    private func cancelLookup() {
-        localSearch?.finish()
-        localSearch?.search.cancel()
-        localSearch = nil
-        osmLookup?.cancel()
-        osmLookup = nil
     }
 
     nonisolated func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
@@ -238,39 +303,70 @@ final class PlaceSearchStore: NSObject, ObservableObject, MKLocalSearchCompleter
         }
     }
 
-    func lookUpOSM(_ text: String) async -> OSMPlace? {
+    func submit(_ rawText: String) async -> SearchMatch? {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return await performLookup {
+            guard !text.isEmpty else { return nil }
+            if case .success(let gps) = CoordinateParser.parse(text) { return .coordinate(gps) }
+            if self.isDemo { return self.demoMatches(text).first.map(SearchMatch.osm) }
+
+            self.nominatimError = nil
+            do {
+                if let place = try await self.lookUpOSM(text) { return .osm(place) }
+            } catch {
+                guard !Task.isCancelled else { return nil }
+                self.nominatimError = error.localizedDescription
+            }
+            guard !Task.isCancelled else { return nil }
+            if text == self.query.trimmingCharacters(in: .whitespacesAndNewlines), let first = self.results.first,
+               let match = await self.resolveApple(MKLocalSearch.Request(completion: first), name: first.title) {
+                return match
+            }
+            guard !Task.isCancelled else { return nil }
+            let request = MKLocalSearch.Request()
+            request.naturalLanguageQuery = text
+            return await self.resolveApple(request, name: text)
+        }
+    }
+
+    func resolve(_ completion: MKLocalSearchCompletion) async -> SearchMatch? {
+        await performLookup {
+            guard !self.isDemo else { return nil }
+            return await self.resolveApple(MKLocalSearch.Request(completion: completion), name: completion.title)
+        }
+    }
+
+    private func performLookup(_ operation: @escaping @MainActor () async -> SearchMatch?) async -> SearchMatch? {
         guard !Task.isCancelled else { return nil }
-        cancelLookup()
-        nominatimError = nil
-        let task = Task { [client] in try await client.search(text).first }
-        osmLookup = task
-        defer { if osmLookup == task { osmLookup = nil } }
+        lookup?.cancel()
+        let task = Task<SearchMatch?, Never> {
+            guard !Task.isCancelled else { return nil }
+            return await operation()
+        }
+        lookup = task
+        defer { if lookup == task { lookup = nil } }
+        let result = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        guard lookup == task, !task.isCancelled, !Task.isCancelled else { return nil }
+        return result
+    }
+
+    private func resolveApple(_ request: MKLocalSearch.Request, name: String) async -> SearchMatch? {
+        guard !Task.isCancelled else { return nil }
+        appleError = nil
         do {
-            let place = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
-            return task.isCancelled ? nil : place
+            guard let (title, map) = try await appleLookup(request, name), !Task.isCancelled else { return nil }
+            guard let gps = ChinaCoordinate.mapToGPS(map) else { throw URLError(.cannotParseResponse) }
+            return .apple(name: title, coordinate: gps)
         } catch {
-            if !task.isCancelled { nominatimError = error.localizedDescription }
+            if !Task.isCancelled { appleError = error.localizedDescription }
             return nil
         }
     }
 
-    func resolve(_ completion: MKLocalSearchCompletion) async -> (String, CLLocationCoordinate2D)? {
-        await run(MKLocalSearch.Request(completion: completion), name: completion.title)
-    }
-
-    func resolve(text: String) async -> (String, CLLocationCoordinate2D)? {
-        let request = MKLocalSearch.Request()
-        request.naturalLanguageQuery = text
-        return await run(request, name: text)
-    }
-
-    private func run(_ request: MKLocalSearch.Request, name: String) async -> (String, CLLocationCoordinate2D)? {
-        guard !Task.isCancelled else { return nil }
-        cancelLookup()
-        appleError = nil
+    private static func searchApple(_ request: MKLocalSearch.Request, name: String) async throws -> (String, CLLocationCoordinate2D)? {
+        try Task.checkCancellation()
         let search = MKLocalSearch(request: request)
         let matches = AsyncThrowingStream<(String, CLLocationCoordinate2D), Error> { result in
-            localSearch = (search, { result.finish() })
             search.start { response, error in
                 if let error {
                     result.finish(throwing: error)
@@ -280,21 +376,8 @@ final class PlaceSearchStore: NSObject, ObservableObject, MKLocalSearchCompleter
                 result.finish()
             }
         }
-        defer {
-            if localSearch?.search === search {
-                localSearch = nil
-                if Task.isCancelled { search.cancel() }
-            }
-        }
-        do {
-            var iterator = matches.makeAsyncIterator()
-            guard let match = try await iterator.next(), localSearch?.search === search, !Task.isCancelled else { return nil }
-            guard CLLocationCoordinate2DIsValid(match.1) else { throw URLError(.cannotParseResponse) }
-            clear()
-            return match
-        } catch {
-            if localSearch?.search === search, !Task.isCancelled { appleError = error.localizedDescription }
-            return nil
-        }
+        defer { if Task.isCancelled { search.cancel() } }
+        var iterator = matches.makeAsyncIterator()
+        return try await iterator.next()
     }
 }

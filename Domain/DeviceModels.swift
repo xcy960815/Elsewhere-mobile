@@ -74,7 +74,10 @@ struct TargetDevice: Codable, Identifiable, Hashable, Sendable {
 }
 
 enum AppliedConfidence: String, Codable, Hashable, Sendable {
-    case confirmed, lastSet, unknownOutcome
+    case confirmed, lastSet, unknownOutcome, clearUnknown
+
+    var isUnknown: Bool { self == .unknownOutcome || self == .clearUnknown }
+    var isConfirmedSimulated: Bool { self == .confirmed || self == .lastSet }
 }
 
 struct AppliedLocationRecord: Codable, Equatable, Sendable {

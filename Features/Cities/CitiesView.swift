@@ -6,6 +6,7 @@ struct CitiesView: View {
     @State private var searching = false
     @State private var adding = false
     @State private var confirmingReset = false
+    let openMap: () -> Void
 
     var body: some View {
         List {
@@ -14,7 +15,7 @@ struct CitiesView: View {
                     .listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
             }
             if searching || !query.isEmpty {
-                let matches = store.cities.filter { query.isEmpty || $0.name.localizedStandardContains(query) }
+                let matches = store.cities.filter { query.isEmpty || $0.displayName.localizedStandardContains(query) }
                 if matches.isEmpty { ContentUnavailableView.search(text: query) }
                 ForEach(matches) { cityRow($0) }
             } else {
@@ -40,7 +41,7 @@ struct CitiesView: View {
                 Button { adding = true } label: { Label("添加城市", systemImage: "plus") }
             }
         }
-        .sheet(isPresented: $adding) { AddCitySheet() }
+        .sheet(isPresented: $adding) { AddCitySheet(openMap: openMap) }
         .sensoryFeedback(trigger: store.feedback) { _, message in message?.sensation }
     }
 
@@ -49,7 +50,7 @@ struct CitiesView: View {
             Task { await store.apply(place: place, source: .city) }
         } label: {
             VStack(alignment: .leading, spacing: 4) {
-                Text(place.name).foregroundStyle(.primary)
+                Text(place.displayName).foregroundStyle(.primary)
                 Text(place.coordinate.formatted).monospacedDigit().font(.caption).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -67,6 +68,7 @@ private struct AddCitySheet: View {
     @State private var latitude = ""
     @State private var longitude = ""
     @State private var saving = false
+    let openMap: () -> Void
 
     var body: some View {
         let parsed = CoordinateParser.parse(latitudeText: latitude, longitudeText: longitude)
@@ -87,6 +89,11 @@ private struct AddCitySheet: View {
                     }
                 }
                 .keyboardType(.numbersAndPunctuation)
+                Button("前往地图选点") {
+                    dismiss()
+                    openMap()
+                }
+                .disabled(saving)
                 if let message = store.feedback, message.kind == .failure {
                     FeedbackBanner(message: message, onDismiss: store.dismissFeedback)
                 }

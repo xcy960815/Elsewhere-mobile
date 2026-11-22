@@ -13,37 +13,20 @@ struct BatchOutcome: Equatable, Sendable {
 }
 
 extension AppStateStore {
-    // 记录整表保存，合并设备回执与生成快照之间不能让另一批写入插队。
-    func saveCommandResult(_ record: AppliedLocationRecord?, for id: DeviceID, settings: AppSettings,
+    func saveCommandResult(_ record: AppliedLocationRecord?, for device: TargetDevice, settings: AppSettings,
                            at date: Date) throws -> [DeviceID: AppliedLocationRecord] {
-        var state = try load()
-        state.records[id] = record
-        try saveRecords(state.records)
-        let previous = widgetSnapshot
-        let enabled = settings.exitFeaturesEnabled && state.settings.exitFeaturesEnabled && previous?.exitFeaturesEnabled != false
-        try writeSnapshot(state: state, enabled: enabled, exitSummary: previous?.exitSummary, at: date)
+        let state = try commitDeviceRecord(record, for: device.id, deviceName: device.name)
+        let enabled = settings.exitFeaturesEnabled && state.settings.exitFeaturesEnabled
+        try writeDisplaySnapshot(state: state, selectedDeviceName: nil, exitEnabled: enabled,
+                                 exitSummary: widgetSnapshot?.exitSummary, at: date)
         return state.records
     }
 
-    func saveExitSnapshot(_ exit: ExitInfo?, at date: Date) throws {
+    func saveExitSnapshot(_ exit: ExitInfo, at date: Date) throws {
         let state = try load()
-        if exit != nil {
-            try Task.checkCancellation()
-            guard state.settings.exitFeaturesEnabled else { throw CancellationError() }
-        }
-        try writeSnapshot(state: state, enabled: exit != nil, exitSummary: exit?.summary(locale: AppLanguage.locale), at: date)
-    }
-
-    private func writeSnapshot(state: State, enabled: Bool, exitSummary: String?, at date: Date) throws {
-        let record = if let id = state.selectedDeviceID {
-            state.records[id]
-        } else {
-            state.records.values.max { ($0.appliedAt, $0.deviceID.rawValue) < ($1.appliedAt, $1.deviceID.rawValue) }
-        }
-        let location = record?.confidence == .unknownOutcome ? nil : record
-        try writeWidgetSnapshot(WidgetSnapshot(selectedDeviceName: record?.deviceName, locationName: location?.name,
-            coordinate: location?.coordinate, source: location?.source, appliedAt: location?.appliedAt,
-            exitSummary: enabled ? exitSummary : nil, exitFeaturesEnabled: enabled, updatedAt: date))
+        try Task.checkCancellation()
+        guard state.settings.exitFeaturesEnabled else { throw CancellationError() }
+        try writeDisplaySnapshot(state: state, selectedDeviceName: nil, exitEnabled: true, exitSummary: exit.summary(locale: AppLanguage.locale), at: date)
     }
 }
 
@@ -68,7 +51,6 @@ actor CommandService {
     private let exitService: ExitIPService
     private let clock: @Sendable () -> Date
     private var queues: [DeviceID: Task<BatchOutcome, Never>] = [:]
-    private var lastAppliedIDs: Set<DeviceID> = []
     private(set) var manualRevision: UInt64 = 0
     private var restoreTracker = AutoRestoreTracker()
     private var restoring: Set<DeviceID> = []
@@ -126,8 +108,7 @@ actor CommandService {
     func clearLocation(targets: [TargetDevice], allReadyDevices: [TargetDevice], settings: AppSettings,
                        onStage: @escaping @Sendable (DeviceID, EngineOperationStage) -> Void = { _, _ in }) async -> BatchOutcome {
         manualRevision += 1
-        let previous = allReadyDevices.filter { lastAppliedIDs.contains($0.id) }
-        return await enqueue(.clear(Set(targets.map(\.id))), targets: targets + previous, settings: settings, onStage: onStage)
+        return await enqueue(.clear(Set(targets.map(\.id))), targets: targets + allReadyDevices, settings: settings, onStage: onStage)
     }
 
     func observeDevicesAndRestoreIfNeeded(readyDevices: [TargetDevice], settings: AppSettings,
@@ -136,7 +117,7 @@ actor CommandService {
         do { state = try await stateStore.load() } catch {
             return [BatchOutcome(failed: readyDevices.map { DeviceFailure(device: $0, error: failure(error)) })]
         }
-        let records = state.records.filter { $0.value.confidence != .unknownOutcome }
+        let records = state.records.filter { !$0.value.confidence.isUnknown }
         restoreTracker.observe(presentIDs: Set(readyDevices.map(\.id)), recordedIDs: Set(records.keys),
                                confirmedUnmountedIDs: Set(readyDevices.filter { $0.ddiMounted == false && records[$0.id] != nil }.map(\.id)),
                                autoRestore: settings.autoRestore && state.settings.autoRestore)
@@ -158,14 +139,15 @@ actor CommandService {
         switch write {
         case .set(_, _, _, let ip, let revision):
             guard let revision else { return true }
-            guard revision == manualRevision else { return false }
+            guard revision == manualRevision, let record = state.records[device.id], !record.confidence.isUnknown else { return false }
             guard settings.watchMode == .auto else { return true }
             // 手动命令可能在采样前就已排队，直到此刻才把旧的出口记录换成城市或清除。
-            guard let record = state.records[device.id], record.source == .exitIP, record.exitIP != ip else { return false }
+            guard record.source == .exitIP, record.exitIP != ip else { return false }
             let mode = state.settings.watchMode
             return mode != .off && (startingMode == nil || mode == startingMode || mode == .auto)
         case .clear(let selected):
-            return selected.contains(device.id) || state.records[device.id].map { $0.confidence != .unknownOutcome } == true
+            return selected.contains(device.id) || (state.lastAppliedBatchIDs.contains(device.id)
+                && state.records[device.id].map { !$0.confidence.isUnknown } == true)
         case .restore(let record):
             return state.settings.autoRestore && restoreTracker.pendingAttempts[device.id] != nil
                 && restoreTracker.presentIDs?.contains(device.id) == true && state.records[device.id] == record
@@ -186,16 +168,40 @@ actor CommandService {
             }
             let batch = devices.filter { includes($0, in: write, state: state, settings: settings) }
             var outcome = BatchOutcome(records: state.records)
-            guard let first = batch.first else { return outcome }
-            do {
-                outcome = try await tunnel.withChannel(mode: settings.channelMode, targetHost: first.endpointHost,
-                                                       autoDisconnect: settings.autoDisconnectTunnel) {
-                    await self.execute(write, targets: batch, settings: settings, initial: state, onStage: onStage)
+            var groups: [[TargetDevice]] = []
+            for device in batch {
+                if groups.isEmpty || (settings.channelMode == .builtInTunnel && groups.last?.last?.endpointHost != device.endpointHost) {
+                    groups.append([device])
+                } else {
+                    groups[groups.count - 1].append(device)
                 }
-            } catch {
-                outcome.failed = batch.map { DeviceFailure(device: $0, error: failure(error, code: .tunnel_unavailable)) }
             }
-            if case .set = write, !outcome.succeeded.isEmpty { lastAppliedIDs = Set(outcome.succeeded.map(\.id)) }
+            for group in groups {
+                do {
+                    let result = try await tunnel.withChannel(mode: settings.channelMode, targetHost: group[0].endpointHost,
+                                                              autoDisconnect: settings.autoDisconnectTunnel) {
+                        await self.execute(write, targets: group, settings: settings, initial: state, onStage: onStage)
+                    }
+                    outcome.succeeded += result.succeeded
+                    outcome.unknown += result.unknown
+                    outcome.failed += result.failed
+                    outcome.records = result.records
+                } catch {
+                    outcome.failed += group.map { DeviceFailure(device: $0, error: failure(error, code: .tunnel_unavailable)) }
+                }
+            }
+            let succeeded = outcome.succeeded
+            if !succeeded.isEmpty {
+                do {
+                    switch write {
+                    case .set: try await stateStore.saveLastAppliedBatchIDs(succeeded.map(\.id))
+                    case .clear: try await stateStore.removeClearedBatchIDs(Set(succeeded.map(\.id)))
+                    case .restore: break
+                    }
+                } catch {
+                    outcome.failed += succeeded.map { DeviceFailure(device: $0, error: failure(error)) }
+                }
+            }
             if let latest = try? await stateStore.load() { outcome.records = latest.records }
             return outcome
         }
@@ -226,13 +232,17 @@ actor CommandService {
                         continue
                     }
                     outcome.unknown.append(device)
-                    guard case .set = write else { continue }
-                    confidence = .unknownOutcome
+                    confidence = location == nil ? .clearUnknown : .unknownOutcome
                 }
                 let date = clock()
-                let record = location.map { AppliedLocationRecord(deviceID: device.id, deviceName: device.name, name: $0.name,
+                var record = location.map { AppliedLocationRecord(deviceID: device.id, deviceName: device.name, name: $0.name,
                     coordinate: $0.coordinate, appliedAt: date, source: $0.source, exitIP: $0.ip, confidence: confidence) }
-                outcome.records = try await stateStore.saveCommandResult(record, for: device.id, settings: settings, at: date)
+                if confidence == .clearUnknown, let previous = state.records[device.id] {
+                    record = AppliedLocationRecord(deviceID: device.id, deviceName: previous.deviceName, name: previous.name,
+                        coordinate: previous.coordinate, appliedAt: previous.appliedAt, source: previous.source,
+                        exitIP: previous.exitIP, confidence: confidence)
+                }
+                outcome.records = try await stateStore.saveCommandResult(record, for: device, settings: settings, at: date)
                 if confidence == .confirmed { outcome.succeeded.append(device) }
             } catch { outcome.failed.append(DeviceFailure(device: device, error: failure(error))) }
         }

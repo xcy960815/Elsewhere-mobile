@@ -24,7 +24,7 @@ struct PairingManagementView: View {
                 if store.pairingRecords.isEmpty { Text("尚未导入配对文件").foregroundStyle(.secondary) }
                 ForEach(store.pairingRecords) { record in
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(record.deviceName ?? store.deviceStates[record.probeID]?.device?.name ?? "未命名设备")
+                        Text(record.deviceName ?? store.deviceStates[record.probeID]?.device?.name ?? String(localized: "未命名设备"))
                             .font(.headline)
                         if let udid = record.udid {
                             Text("UDID · \(udid.rawValue)").font(.caption.monospaced())
@@ -56,7 +56,7 @@ struct PairingManagementView: View {
                                 Button("修改地址") { editedHost = record.endpointHost; editing = record.id }
                             }
                         }
-                        Text(store.deviceStates[record.probeID]?.diagnosis ?? "尚未测试连接")
+                        Text(store.deviceStates[record.probeID]?.diagnosis ?? String(localized: "尚未测试连接"))
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     .buttonStyle(.borderless)
@@ -93,7 +93,7 @@ struct PairingManagementView: View {
                     working = false
                 }
             case .failure(let error):
-                if (error as? CocoaError)?.code != .userCancelled { store.fail("无法打开配对文件", error) }
+                if (error as? CocoaError)?.code != .userCancelled { store.fail(String(localized: "无法打开配对文件"), error) }
             }
         }
         .sensoryFeedback(trigger: store.feedback) { _, message in message?.sensation }

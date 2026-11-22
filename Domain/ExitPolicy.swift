@@ -33,7 +33,7 @@ enum ExitPolicy: Sendable {
         guard fetchedExit.ip == probeIP else { return .notifyDiscrepancy(probeIP: probeIP, detailIP: fetchedExit.ip) }
         var actions: [DeviceID: TargetExitAction] = [:]
         for id in targetDeviceIDs {
-            guard let record = records[id], record.source == .exitIP else {
+            guard let record = records[id], !record.confidence.isUnknown, record.source == .exitIP else {
                 actions[id] = .notify
                 continue
             }

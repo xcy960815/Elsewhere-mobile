@@ -27,10 +27,11 @@ struct DDIReleaseLease: Sendable {
 }
 
 enum DDIRepositoryError: LocalizedError, Equatable, Sendable {
-    case httpStatus(Int), verificationFailed(String), storageFailure(String)
+    case cancelled, httpStatus(Int), verificationFailed(String), storageFailure(String)
 
     var errorDescription: String? {
         switch self {
+        case .cancelled: String(localized: "开发者组件准备已取消")
         case .httpStatus(let status): String(localized: "开发者组件下载失败（HTTP \(status)）")
         case .verificationFailed(let reason), .storageFailure(let reason): reason
         }
@@ -40,12 +41,19 @@ enum DDIRepositoryError: LocalizedError, Equatable, Sendable {
 actor DDIRepository {
     static let requiredFiles = ["BuildManifest.plist", "Image.dmg", "Image.dmg.trustcache"]
 
+    private struct Waiter {
+        let onStage: @Sendable (String) -> Void
+        let continuation: CheckedContinuation<Result<DDIReleaseLease, DDIRepositoryError>, Never>
+        var cacheCheck: Task<Void, Never>?
+    }
+
     private let baseDirectory: URL
     private let mirrorBaseURL: URL?
     private let download: @Sendable (URL) async throws -> URL
     private let verifier: DDIVerifier
-    private var preparation: Task<Result<URL, DDIRepositoryError>, Never>?
-    private var observers: [UUID: @Sendable (String) -> Void] = [:]
+    private var preparation: Task<Void, Never>?
+    private var observers: [UUID: Waiter] = [:]
+    private var cleanedStaging = false
     private var stage: String?
     private var leases: [String: Set<UUID>] = [:]
     private var versions: URL { baseDirectory.appending(path: "versions", directoryHint: .isDirectory) }
@@ -71,29 +79,77 @@ actor DDIRepository {
 
     func acquirePrepared(forceRefresh: Bool = false,
                          onStage: @escaping @Sendable (String) -> Void = { _ in }) async throws(DDIRepositoryError) -> DDIReleaseLease {
-        if !forceRefresh {
-            while let directory = currentDirectory() {
-                if let lease = await verifiedLease(for: directory) { return lease }
-                if directory == currentDirectory() { break }
+        let id = UUID()
+        let result: Result<DDIReleaseLease, DDIRepositoryError> = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: .failure(.cancelled))
+                    return
+                }
+                observers[id] = Waiter(onStage: onStage, continuation: continuation)
+                if !forceRefresh, let directory = currentDirectory() {
+                    observers[id]?.cacheCheck = Task { await checkCache(directory, for: id) }
+                } else {
+                    joinPreparation(id)
+                }
             }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
         }
-        let observer = UUID()
-        observers[observer] = onStage
-        if let stage { onStage(stage) }
-        let task = preparation ?? Task {
-            do throws(DDIRepositoryError) { return .success(try await prepare()) }
-            catch { return .failure(error) }
+        if Task.isCancelled {
+            if case .success(let lease) = result { release(lease) }
+            throw .cancelled
         }
-        preparation = task
-        // 最后一个等待者取得租约后才能启动下一次刷新，否则迟到的等待者可能拿到已回收的目录。
-        defer {
-            observers[observer] = nil
-            if observers.isEmpty {
-                preparation = nil
-                stage = nil
+        return try result.get()
+    }
+
+    private func checkCache(_ initial: URL, for id: UUID) async {
+        var directory = initial
+        while !Task.isCancelled {
+            if let lease = await verifiedLease(for: directory) {
+                if let waiter = observers.removeValue(forKey: id) {
+                    waiter.continuation.resume(returning: .success(lease))
+                } else {
+                    release(lease)
+                }
+                return
             }
+            guard observers[id] != nil else { return }
+            guard let current = currentDirectory(), current != directory else { break }
+            directory = current
         }
-        return retain(try await task.value.get())
+        guard !Task.isCancelled else { return }
+        observers[id]?.cacheCheck = nil
+        joinPreparation(id)
+    }
+
+    private func joinPreparation(_ id: UUID) {
+        if let stage { observers[id]?.onStage(stage) }
+        guard preparation == nil else { return }
+        preparation = Task {
+            let result: Result<URL, DDIRepositoryError>
+            do throws(DDIRepositoryError) { result = .success(try await prepare()) }
+            catch { result = .failure(error) }
+            guard !Task.isCancelled else { return }
+            // 在同一轮 actor 调度中为所有等待者保留目录，避免下一次刷新提前回收它。
+            for (id, waiter) in observers where waiter.cacheCheck == nil {
+                observers[id] = nil
+                waiter.continuation.resume(returning: result.map { retain($0) })
+            }
+            preparation = nil
+            stage = nil
+        }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let waiter = observers.removeValue(forKey: id) else { return }
+        waiter.cacheCheck?.cancel()
+        if observers.values.allSatisfy({ $0.cacheCheck != nil }) {
+            preparation?.cancel()
+            preparation = nil
+            stage = nil
+        }
+        waiter.continuation.resume(returning: .failure(.cancelled))
     }
 
     func release(_ lease: DDIReleaseLease) {
@@ -139,7 +195,7 @@ actor DDIRepository {
 
     private func report(_ value: EngineOperationStage) {
         stage = value.rawValue
-        for observer in observers.values { observer(value.rawValue) }
+        for waiter in observers.values where waiter.cacheCheck == nil { waiter.onStage(value.rawValue) }
     }
 
     private func verifiedDigest(in directory: URL) async throws(DDIRepositoryError) -> String {
@@ -165,18 +221,29 @@ actor DDIRepository {
         var path = raw.path.split(separator: "/").map(String.init)
         guard path.count >= 3 else { throw DDIRepositoryError.storageFailure(String(localized: "镜像地址缺少修订")) }
         let revision = path[2]
-        if revision.count == 40, revision.allSatisfy(\.isHexDigit) { return mirrorBaseURL }
+        func validSHA(_ value: String) -> Bool {
+            value.utf8.count == 40 && value.allSatisfy { $0.isASCII && $0.isHexDigit }
+        }
+        if validSHA(revision) { return mirrorBaseURL }
         var api = URLComponents()
         api.scheme = "https"
         api.host = "api.github.com"
         api.path = "/repos/\(path[0])/\(path[1])/commits/\(revision)"
-        // 代理共享出口易触发 GitHub API 限流，解析提交失败时回退到原镜像，仍由摘要校验保证三件配套。
-        guard let reference = api.url, let file = try? await download(reference) else { return mirrorBaseURL }
-        defer { try? FileManager.default.removeItem(at: file) }
+        let pin = baseDirectory.appending(path: "pinned-commit.txt")
         struct Commit: Decodable { let sha: String }
-        guard let commit = try? JSONDecoder().decode(Commit.self, from: Data(contentsOf: file)),
-              commit.sha.count == 40, commit.sha.allSatisfy(\.isHexDigit) else { return mirrorBaseURL }
-        path[2] = commit.sha
+        var sha: String?
+        if let reference = api.url, let file = try? await download(reference) {
+            defer { try? FileManager.default.removeItem(at: file) }
+            try Task.checkCancellation()
+            if let commit = try? JSONDecoder().decode(Commit.self, from: Data(contentsOf: file)), validSHA(commit.sha) {
+                try Data(commit.sha.utf8).write(to: pin, options: .atomic)
+                sha = commit.sha
+            }
+        }
+        try Task.checkCancellation()
+        guard let pinned = sha ?? (try? String(contentsOf: pin, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines),
+              validSHA(pinned) else { return mirrorBaseURL }
+        path[2] = pinned
         raw.path = "/" + path.joined(separator: "/") + "/"
         return raw.url ?? mirrorBaseURL
     }
@@ -185,30 +252,39 @@ actor DDIRepository {
         let fm = FileManager.default
         let staging = baseDirectory.appending(path: "staging-\(UUID().uuidString)", directoryHint: .isDirectory)
         do {
+            try Task.checkCancellation()
             try fm.createDirectory(at: versions, withIntermediateDirectories: true)
-            for item in try fm.contentsOfDirectory(at: baseDirectory, includingPropertiesForKeys: nil) {
-                let name = item.lastPathComponent
-                if name.hasPrefix("staging-"), UUID(uuidString: String(name.dropFirst("staging-".count))) != nil {
-                    try? fm.removeItem(at: item)
+            if !cleanedStaging {
+                for item in try fm.contentsOfDirectory(at: baseDirectory, includingPropertiesForKeys: nil) {
+                    let name = item.lastPathComponent
+                    if name.hasPrefix("staging-"), UUID(uuidString: String(name.dropFirst("staging-".count))) != nil {
+                        try? fm.removeItem(at: item)
+                    }
                 }
+                cleanedStaging = true
             }
             try fm.createDirectory(at: staging, withIntermediateDirectories: false)
             defer { try? fm.removeItem(at: staging) }
             report(.downloadingDDI)
             let mirror = try await pinnedMirror()
             for name in Self.requiredFiles {
+                try Task.checkCancellation()
                 let source = mirror.appending(component: name)
                 let file = try await download(source)
                 let destination = staging.appending(component: name)
                 if source.isFileURL, file.standardizedFileURL == source.standardizedFileURL {
+                    try Task.checkCancellation()
                     try fm.copyItem(at: file, to: destination)
                 } else {
                     defer { try? fm.removeItem(at: file) }
+                    try Task.checkCancellation()
                     try fm.moveItem(at: file, to: destination)
                 }
             }
+            try Task.checkCancellation()
             report(.verifyingDDI)
             let digest = try await verifiedDigest(in: staging)
+            try Task.checkCancellation()
             // 同一映像摘要可以配不同的清单或 trust cache，每次发布都要保留独立目录。
             let versionID = "\(digest).\(UUID().uuidString)"
             guard let directory = versionDirectory(named: versionID) else {
@@ -230,6 +306,7 @@ actor DDIRepository {
         } catch let error as DDIRepositoryError {
             throw error
         } catch {
+            if Task.isCancelled { throw .cancelled }
             throw .storageFailure(error.localizedDescription)
         }
     }

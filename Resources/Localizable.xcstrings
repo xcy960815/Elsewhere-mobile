@@ -1180,6 +1180,38 @@
         }
       }
     },
+    "前往地图选点" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose on Map"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "前往地图选点"
+          }
+        }
+      }
+    },
+    "前往城市管理" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Manage Cities"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "前往城市管理"
+          }
+        }
+      }
+    },
     "卫星" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1991,6 +2023,22 @@
         }
       }
     },
+    "开发者组件准备已取消" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Developer component preparation was canceled."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开发者组件准备已取消"
+          }
+        }
+      }
+    },
     "开发者组件摘要无效" : {
       "localizations" : {
         "en" : {
@@ -2131,6 +2179,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "当前使用真实定位"
+          }
+        }
+      }
+    },
+    "忽略" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dismiss"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "忽略"
           }
         }
       }
@@ -2563,6 +2627,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无效的 WGS-84 坐标"
+          }
+        }
+      }
+    },
+    "无本地模拟记录" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No local record of a simulated location"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无本地模拟记录"
           }
         }
       }
@@ -3336,6 +3416,22 @@
         }
       }
     },
+    "模拟待确认 · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Simulated location unconfirmed · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模拟待确认 · %@"
+          }
+        }
+      }
+    },
     "模拟结果待确认" : {
       "localizations" : {
         "en" : {
@@ -3829,6 +3925,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "清空搜索"
+          }
+        }
+      }
+    },
+    "清除待确认 · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear request unconfirmed · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除待确认 · %@"
+          }
+        }
+      }
+    },
+    "清除结果待确认" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear request unconfirmed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除结果待确认"
           }
         }
       }
@@ -4783,6 +4911,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "输入数据无效"
+          }
+        }
+      }
+    },
+    "还没有常用城市" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No favorite cities yet"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有常用城市"
           }
         }
       }

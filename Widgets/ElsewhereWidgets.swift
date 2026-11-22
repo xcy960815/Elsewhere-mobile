@@ -25,21 +25,21 @@ private struct LocationWidgetView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Label(snapshot?.selectedDeviceName ?? String(localized: "暂无设备信息"), systemImage: "iphone")
-                    .font(.caption).foregroundStyle(.secondary)
-                if family == .systemSmall {
-                    Spacer(minLength: 2)
-                    Image(systemName: snapshot?.locationName == nil ? "location.circle" : "mappin.circle.fill")
-                        .foregroundStyle(.tint)
-                        .accessibilityLabel(snapshot?.locationName == nil ? Text("无模拟记录") : Text("上次模拟位置"))
-                }
-            }
+            Label(snapshot?.selectedDeviceName ?? String(localized: "暂无设备信息"), systemImage: "iphone")
+                .font(.caption).foregroundStyle(.secondary)
             if let snapshot {
-                Text(snapshot.locationName ?? String(localized: "真实定位")).font(.headline)
-                if let coordinate = snapshot.coordinate {
-                    Text(coordinate.formatted).monospacedDigit().minimumScaleFactor(0.75)
-                } else {
+                switch snapshot.locationState {
+                case .simulated:
+                    Label(snapshot.locationName ?? String(localized: "上次模拟位置"), systemImage: "mappin.circle.fill").font(.headline)
+                    if let coordinate = snapshot.coordinate {
+                        Text(coordinate.formatted).monospacedDigit().minimumScaleFactor(0.75)
+                    }
+                case .unknownOutcome:
+                    Label(String(localized: "模拟结果待确认"), systemImage: "questionmark.circle").font(.headline)
+                case .clearUnknown:
+                    Label(String(localized: "清除结果待确认"), systemImage: "questionmark.circle").font(.headline)
+                case .real:
+                    Label(String(localized: "真实定位"), systemImage: "location.circle").font(.headline)
                     Text("更新于 \(snapshot.updatedAt, style: .time)").monospacedDigit()
                 }
                 if snapshot.exitFeaturesEnabled {

@@ -83,13 +83,13 @@ struct FeedbackBanner: View {
 }
 
 struct StatusPill: View {
-    let title: LocalizedStringKey
+    let title: String
     var color: Color = .secondary
 
     var body: some View {
         HStack(spacing: 5) {
             Circle().fill(color).frame(width: 7, height: 7)
-            Text(title).font(.caption.weight(.medium))
+            Text(verbatim: title).font(.caption.weight(.medium))
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 4)
@@ -116,6 +116,8 @@ struct HintBanner: View {
     let title: LocalizedStringKey
     var systemImage = "info.circle"
     var action: (title: LocalizedStringKey, perform: () -> Void)?
+    var actionDisabled = false
+    var secondaryAction: (title: LocalizedStringKey, perform: () -> Void)? = nil
 
     var body: some View {
         SurfaceCard {
@@ -123,11 +125,18 @@ struct HintBanner: View {
                 Label(title, systemImage: systemImage)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                if let action {
-                    Button(action.title, action: action.perform)
-                        .font(.subheadline.weight(.semibold))
-                        .buttonStyle(.bordered)
-                        .tint(.primary)
+                if action != nil || secondaryAction != nil {
+                    HStack {
+                        if let action {
+                            Button(action.title, action: action.perform).disabled(actionDisabled)
+                        }
+                        if let secondaryAction {
+                            Button(secondaryAction.title, action: secondaryAction.perform)
+                        }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .tint(.primary)
                 }
             }
         }

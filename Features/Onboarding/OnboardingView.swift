@@ -73,7 +73,7 @@ struct OnboardingView: View {
                     }
                 }
             case .failure(let error):
-                if (error as? CocoaError)?.code != .userCancelled { store.fail("无法打开配对文件", error) }
+                if (error as? CocoaError)?.code != .userCancelled { store.fail(String(localized: "无法打开配对文件"), error) }
             }
         }
         .onChange(of: store.settings.channelMode) { testedID = nil }

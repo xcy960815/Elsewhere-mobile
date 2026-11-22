@@ -3,6 +3,7 @@ import SwiftUI
 struct LocationView: View {
     @Environment(AppStore.self) private var store
     @State private var tappedCity: UUID?
+    let openCities: () -> Void
 
     var body: some View {
         ScrollView {
@@ -13,26 +14,31 @@ struct LocationView: View {
                     FeedbackBanner(message: feedback, onDismiss: store.dismissFeedback)
                 }
                 if case let .mismatch(_, _, hint, estimated) = store.timeZoneResult {
-                    HintBanner(title: "\(estimated ? "时区估算 · " : "")\(hint)", systemImage: "clock")
+                    HintBanner(title: "\(estimated ? String(localized: "时区估算 · ") : "")\(hint)", systemImage: "clock")
                 }
                 if store.settings.exitFeaturesEnabled {
                     if let change = store.pendingExitChange {
                         HintBanner(title: "代理出口已变为 \(change.displayCity)（\(change.ip)）", systemImage: "network",
-                                   action: ("改过去", { Task { await store.followExit(prefetched: change) } }))
-                            .disabled(!store.canOperate)
+                                   action: ("改过去", { Task { await store.followExit(prefetched: change) } }),
+                                   actionDisabled: !store.canOperate,
+                                   secondaryAction: ("忽略", { Task { await store.dismissPendingExitChange() } }))
                     }
                     exitCard
                 }
                 Text("常用城市").font(.headline)
+                if store.cities.isEmpty {
+                    Text("还没有常用城市").foregroundStyle(.secondary)
+                    Button("前往城市管理", action: openCities).buttonStyle(.bordered)
+                }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())]) {
                     ForEach(store.cities) { place in
-                        let matched = store.selectedRecord.map { $0.confidence != .unknownOutcome && $0.coordinate.isSameSpot(as: place.coordinate) } == true
+                        let matched = store.selectedRecord.map { $0.confidence.isConfirmedSimulated && $0.coordinate.isSameSpot(as: place.coordinate) } == true
                         Button {
                             tappedCity = UUID()
                             Task { await store.apply(place: place, source: .city) }
                         } label: {
                             HStack {
-                                Text(place.name)
+                                Text(place.displayName)
                                 Spacer(minLength: 2)
                                 if matched { Image(systemName: "checkmark.circle.fill") }
                             }
@@ -77,13 +83,15 @@ struct LocationView: View {
                     .accessibilityLabel("刷新设备")
                     .disabled(store.busyMessage != nil)
                 }
-                Text(device?.name ?? store.selectedDeviceID?.rawValue ?? "未连接设备").font(.title2.bold())
+                Text(device?.name ?? store.selectedDeviceID?.rawValue ?? String(localized: "未连接设备")).font(.title2.bold())
                 if let device, let version = device.osVersion {
                     Text("\(device.kind == "iPad" ? "iPadOS" : "iOS") \(version.major).\(version.minor).\(version.patch)")
                         .font(.subheadline).monospacedDigit()
                 }
-                StatusPill(title: "\(state?.diagnosis ?? "设备未就绪")", color: state?.isReady == true ? .green : .secondary)
-                Text(store.settings.channelMode == .existingRoute ? "已有路由" : "内置通道 · \(store.tunnelStatus.title)")
+                StatusPill(title: state?.diagnosis ?? String(localized: "设备未就绪"), color: state?.isReady == true ? .green : .secondary)
+                Text(store.settings.channelMode == .existingRoute
+                     ? String(localized: "已有路由")
+                     : String(localized: "内置通道 · \(store.tunnelStatus.localizedTitle)"))
                     .font(.caption).foregroundStyle(.secondary)
                 if store.settings.applyToAll { Text("将操作全部 \(store.readyDevices.count) 台就绪设备").font(.caption) }
                 if let message = store.busyMessage {
@@ -97,7 +105,12 @@ struct LocationView: View {
         SurfaceCard {
             VStack(alignment: .leading, spacing: 8) {
                 if let record = store.selectedRecord {
-                    Text(record.confidence == .unknownOutcome ? "模拟结果待确认" : "上次设置的位置")
+                    let title: LocalizedStringKey = switch record.confidence {
+                    case .unknownOutcome: "模拟结果待确认"
+                    case .clearUnknown: "清除结果待确认"
+                    case .confirmed, .lastSet: "上次设置的位置"
+                    }
+                    Text(title)
                         .font(.subheadline).foregroundStyle(.secondary)
                     Text(record.name).font(.title2.bold())
                     Text("WGS-84 · \(record.coordinate.formatted)").monospacedDigit().textSelection(.enabled)
@@ -109,7 +122,9 @@ struct LocationView: View {
                     Button("恢复真实定位") { Task { await store.clearLocation() } }
                         .buttonStyle(.borderedProminent).disabled(!store.canOperate)
                 } else {
-                    Label("当前使用真实定位", systemImage: "location")
+                    Label("无本地模拟记录", systemImage: "location")
+                    Button("恢复真实定位") { Task { await store.clearLocation() } }
+                        .buttonStyle(.bordered).disabled(!store.canOperate)
                 }
             }
         }
@@ -142,14 +157,14 @@ struct LocationView: View {
     }
 }
 
-private extension TunnelConnectionStatus {
-    var title: String {
+extension TunnelConnectionStatus {
+    var localizedTitle: String {
         switch self {
-        case .disconnected: "已断开"
-        case .connecting: "连接中"
-        case .connected: "已连接"
-        case .disconnecting: "正在断开"
-        case .unavailable: "不可用"
+        case .disconnected: String(localized: "已断开")
+        case .connecting: String(localized: "连接中")
+        case .connected: String(localized: "已连接")
+        case .disconnecting: String(localized: "正在断开")
+        case .unavailable: String(localized: "不可用")
         }
     }
 }

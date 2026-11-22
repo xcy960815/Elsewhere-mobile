@@ -1,14 +1,13 @@
 import BackgroundTasks
 import Foundation
-import Network
 
 enum ExitRefreshOutcome: Equatable, Sendable {
     case disabled
     case unchanged(ExitInfo?)
     case updated(ExitInfo)
     case discrepancy(probeIP: String, detailIP: String)
-    case pendingChange(ExitInfo)
-    case autoFollowed(ExitInfo, BatchOutcome)
+    case pendingChange(PendingExitEvent)
+    case autoFollowed(ExitInfo, BatchOutcome, pending: PendingExitEvent?)
     case failed(String)
 }
 
@@ -25,8 +24,8 @@ actor ExitMonitorService {
     private(set) var lastExit: ExitInfo?
     private(set) var lastFetchedAt: Date?
     private(set) var pendingRetryIP: String?
-    private var inFlight: (kind: Refresh, task: Task<ExitRefreshOutcome, Never>)?
-    private var foreground: Task<Void, Never>?
+    private var inFlight: (kind: Refresh, proxyKey: String, task: Task<ExitRefreshOutcome, Never>)?
+    private var activeProxyKey: String?
 
     init(exitService: ExitIPService, commandService: CommandService, tunnel: TunnelCoordinator,
          notifier: Notifier, stateStore: AppStateStore, now: @escaping @Sendable () -> Date = Date.init) {
@@ -44,7 +43,8 @@ actor ExitMonitorService {
             return .disabled
         }
         inFlight?.task.cancel()
-        return await run(.manual) { monitor in
+        return await run(.manual, proxy: proxy) { monitor in
+            try await monitor.prepareBaseline(for: proxy)
             let settings = try await monitor.stateStore.load().settings
             try Task.checkCancellation()
             guard settings.exitFeaturesEnabled else {
@@ -52,17 +52,22 @@ actor ExitMonitorService {
                 return .disabled
             }
             let exit = try await monitor.exitService.lookup(proxy: proxy)
-            try await monitor.confirm(exit)
+            try await monitor.confirm(exit, proxy: proxy)
             return .updated(exit)
         }
     }
 
-    func handleForegroundReturn(settings: AppSettings, proxy: ExitProxyAddress?) async -> ExitRefreshOutcome? {
+    func handleForegroundReturn(settings: AppSettings, proxy: ExitProxyAddress?, targets: [TargetDevice]) async -> ExitRefreshOutcome? {
         guard settings.exitFeaturesEnabled else {
             await invalidateDisabledState()
             return nil
         }
+        do { try await prepareBaseline(for: proxy) }
+        catch { return .failed(error.localizedDescription) }
         if let lastFetchedAt, now().timeIntervalSince(lastFetchedAt) <= 60 { return nil }
+        if settings.watchMode != .off, lastConfirmedIP != nil {
+            return await checkChange(settings: settings, proxy: proxy, targets: targets)
+        }
         return await refreshManually(settings: settings, proxy: proxy)
     }
 
@@ -74,10 +79,17 @@ actor ExitMonitorService {
         }
         guard settings.watchMode != .off else {
             if inFlight?.kind == .change { inFlight?.task.cancel() }
+            do { try await prepareBaseline(for: proxy) }
+            catch { return .failed(error.localizedDescription) }
             return .disabled
         }
+        if let inFlight, inFlight.proxyKey != proxyKey(for: proxy) {
+            inFlight.task.cancel()
+            self.inFlight = nil
+        }
         guard inFlight == nil else { return .unchanged(lastExit) }
-        return await run(.change) { monitor in
+        return await run(.change, proxy: proxy) { monitor in
+            try await monitor.prepareBaseline(for: proxy)
             guard !(await monitor.tunnel.isSwitchingChannel) else { return .unchanged(monitor.lastExit) }
             let initial = try await monitor.stateStore.load().settings
             try Task.checkCancellation()
@@ -92,6 +104,11 @@ actor ExitMonitorService {
             let needsDetail = ExitPolicy.shouldFetchDetail(featuresEnabled: settings.exitFeaturesEnabled, watchMode: settings.watchMode,
                                                            previousIP: monitor.lastConfirmedIP, observedIP: ip)
             guard needsDetail || monitor.pendingRetryIP == ip else {
+                let date = monitor.now()
+                try await monitor.stateStore.saveExitBaseline(ExitBaseline(proxyKey: monitor.proxyKey(for: proxy),
+                    lastConfirmedIP: ip, lastExit: monitor.lastExit, lastFetchedAt: date))
+                try Task.checkCancellation()
+                monitor.lastFetchedAt = date
                 monitor.lastConfirmedIP = ip
                 monitor.pendingRetryIP = nil
                 return .unchanged(monitor.lastExit)
@@ -115,7 +132,6 @@ actor ExitMonitorService {
                                       body: String(localized: "检测到 \(probeIP)，位置服务报告 \(detailIP)。请核对网络路径。"))
                 return .discrepancy(probeIP: probeIP, detailIP: detailIP)
             case .evaluateTargets(_, let actions):
-                try await monitor.confirm(exit)
                 return try await monitor.handleChange(exit, actions: actions, targets: targets, settings: current,
                                                       proxy: proxy, revision: revision, isBackground: isBackground)
             }
@@ -147,13 +163,16 @@ actor ExitMonitorService {
             return .disabled
         }
         guard live.watchMode != .off else { return .disabled }
-        if !pending.isEmpty {
+        let event = pending.isEmpty ? nil : PendingExitEvent(id: UUID(), exit: exit, targetDeviceIDs: pending.map(\.id), createdAt: now())
+        try await stateStore.savePendingExitEvent(event)
+        try await confirm(exit, proxy: proxy)
+        if let event {
             let names = pending.map(\.name).joined(separator: "、")
             notifier.post(title: String(localized: "代理出口变了"),
-                          body: String(localized: "\(names)：\(exit.displayCity)（\(exit.ip)）"), category: Notifier.exitChangedCategory)
+                          body: String(localized: "\(names)：\(exit.displayCity)（\(exit.ip)）"), category: Notifier.exitChangedCategory, eventID: event.id)
         }
-        if let outcome { return .autoFollowed(exit, outcome) }
-        return pending.isEmpty ? .updated(exit) : .pendingChange(exit)
+        if let outcome { return .autoFollowed(exit, outcome, pending: event) }
+        return event.map(ExitRefreshOutcome.pendingChange) ?? .updated(exit)
     }
 
     private static func followIfCurrent(_ service: isolated CommandService, revision: UInt64, exit: ExitInfo, targets: [TargetDevice],
@@ -164,8 +183,39 @@ actor ExitMonitorService {
         return outcome.succeeded.isEmpty && outcome.unknown.isEmpty && outcome.failed.isEmpty ? nil : outcome
     }
 
-    private func confirm(_ exit: ExitInfo) async throws {
+    private func proxyKey(for proxy: ExitProxyAddress?) -> String { proxy?.display ?? "" }
+
+    private func prepareBaseline(for proxy: ExitProxyAddress?) async throws {
+        let key = proxyKey(for: proxy)
+        guard lastConfirmedIP == nil || activeProxyKey != key else { return }
+        let stored = try await stateStore.load().exitBaseline
+        try Task.checkCancellation()
+        if let stored, stored.proxyKey == key {
+            lastConfirmedIP = stored.lastConfirmedIP
+            lastExit = stored.lastExit
+            lastFetchedAt = stored.lastFetchedAt
+            if activeProxyKey != key { pendingRetryIP = nil }
+        } else if activeProxyKey.map({ $0 != key }) == true || stored != nil {
+            try await clearExitState(disabled: false)
+            try Task.checkCancellation()
+        }
+        activeProxyKey = key
+    }
+
+    func pendingEvent(for id: UUID?) async -> PendingExitEvent? {
+        guard let event = try? await stateStore.load().pendingExitEvent, id == nil || event.id == id else { return nil }
+        return event
+    }
+
+    func clearPendingEvent(id: UUID? = nil) async {
+        try? await stateStore.clearPendingExitEvent(id: id)
+    }
+
+    private func confirm(_ exit: ExitInfo, proxy: ExitProxyAddress?) async throws {
+        try Task.checkCancellation()
         let date = now()
+        try await stateStore.saveExitBaseline(ExitBaseline(proxyKey: proxyKey(for: proxy), lastConfirmedIP: exit.ip,
+                                                          lastExit: exit, lastFetchedAt: date))
         try await stateStore.saveExitSnapshot(exit, at: date)
         try Task.checkCancellation()
         lastConfirmedIP = exit.ip
@@ -174,7 +224,7 @@ actor ExitMonitorService {
         pendingRetryIP = nil
     }
 
-    private func run(_ kind: Refresh, operation: @escaping @Sendable (isolated ExitMonitorService) async throws -> ExitRefreshOutcome) async -> ExitRefreshOutcome {
+    private func run(_ kind: Refresh, proxy: ExitProxyAddress?, operation: @escaping @Sendable (isolated ExitMonitorService) async throws -> ExitRefreshOutcome) async -> ExitRefreshOutcome {
         let task = Task {
             do {
                 try Task.checkCancellation()
@@ -189,7 +239,7 @@ actor ExitMonitorService {
                 return Task.isCancelled ? .unchanged(lastExit) : .failed(error.localizedDescription)
             }
         }
-        inFlight = (kind, task)
+        inFlight = (kind, proxyKey(for: proxy), task)
         defer { if inFlight?.task == task { inFlight = nil } }
         return await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
@@ -197,44 +247,22 @@ actor ExitMonitorService {
     func invalidateDisabledState() async {
         inFlight?.task.cancel()
         inFlight = nil
-        stopForegroundMonitoring()
+        try? await clearExitState(disabled: true)
+    }
+
+    func resetForProxyChange() async {
+        inFlight?.task.cancel()
+        inFlight = nil
+        try? await clearExitState(disabled: false)
+    }
+
+    private func clearExitState(disabled: Bool) async throws {
+        activeProxyKey = nil
         lastExit = nil
         lastConfirmedIP = nil
         lastFetchedAt = nil
         pendingRetryIP = nil
-        try? await stateStore.saveExitSnapshot(nil, at: now())
-    }
-
-    func startForegroundMonitoring(context: @escaping @Sendable () async -> (AppSettings, ExitProxyAddress?, [TargetDevice])) {
-        stopForegroundMonitoring()
-        foreground = Task { [weak self, tunnel] in
-            let (initial, _, _) = await context()
-            guard !Task.isCancelled, initial.exitFeaturesEnabled, initial.watchMode != .off else { return }
-            let paths = NWPathMonitor()
-            let (events, signal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-            paths.pathUpdateHandler = { _ in
-                Task { if !(await tunnel.isSwitchingChannel) { signal.yield(()) } }
-            }
-            paths.start(queue: DispatchQueue(label: "com.elsewhere.mobile.exit-path"))
-            let timer = Task {
-                while !Task.isCancelled {
-                    try await Task.sleep(for: .seconds(30))
-                    signal.yield(())
-                }
-            }
-            defer { timer.cancel(); paths.cancel(); signal.finish() }
-            for await _ in events {
-                let (settings, proxy, devices) = await context()
-                guard let self, !Task.isCancelled else { return }
-                _ = await self.checkChange(settings: settings, proxy: proxy, targets: devices)
-                if settings.watchMode == .off { return }
-            }
-        }
-    }
-
-    func stopForegroundMonitoring() {
-        foreground?.cancel()
-        foreground = nil
+        try await stateStore.resetExitState(disabled: disabled, at: now())
     }
 
     @MainActor func handleBackgroundRefresh(_ task: BGAppRefreshTask, settings: AppSettings, proxy: ExitProxyAddress?, targets: [TargetDevice]) {

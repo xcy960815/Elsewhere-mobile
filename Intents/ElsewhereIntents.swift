@@ -1,6 +1,5 @@
 import AppIntents
 import Foundation
-import Observation
 
 private struct ElsewhereIntentError: LocalizedError, CustomLocalizedStringResourceConvertible {
     let localizedStringResource: LocalizedStringResource
@@ -13,24 +12,43 @@ enum IntentExecutor {
 
     @MainActor
     func run(in store: AppStore) async throws -> String {
-        if store.readyDevices.isEmpty {
-            if store.busyMessage == nil { await store.load() }
-            // 场景激活与快捷指令可能同时冷启动，共用正在进行的设备探测。
-            while store.busyMessage != nil {
-                await withCheckedContinuation { continuation in
-                    withObservationTracking { _ = store.busyMessage } onChange: { continuation.resume() }
-                }
-                try Task.checkCancellation()
+        let env = store.environment
+        let needsProbe = store.readyDevices.isEmpty
+        @MainActor func loadSettings() async throws {
+            if !store.loaded || needsProbe {
+                guard await store.loadSettingsOnly() else { throw ElsewhereIntentError(localizedStringResource: "无法加载应用状态") }
             }
         }
-        if case .followExit = self, !store.settings.exitFeaturesEnabled {
-            throw ElsewhereIntentError(localizedStringResource: "出口功能已关闭，请先在设置中开启。")
+        @MainActor func followProxy() throws -> ExitProxyAddress? {
+            guard store.settings.exitFeaturesEnabled else {
+                throw ElsewhereIntentError(localizedStringResource: "出口功能已关闭，请先在设置中开启。")
+            }
+            return try store.settings.parsedProxy.get()
         }
+
+        var sample: AppStore.ExitSample?
+        if case .followExit = self, needsProbe {
+            sample = try await store.prefetchExitBeforeProbing {
+                try await loadSettings()
+                let proxy = try followProxy()
+                return (try await env.exitService.lookup(proxy: proxy), proxy)
+            }
+        } else {
+            try await loadSettings()
+            if case .followExit = self { _ = try followProxy() }
+        }
+        if store.readyDevices.isEmpty { await store.refreshDevices() }
+        else { await store.waitForDeviceRefresh() }
+        try Task.checkCancellation()
         if let busy = store.busyMessage { throw ElsewhereIntentError(localizedStringResource: "设备正忙：\(busy)") }
         store.dismissFeedback()
         switch self {
         case .followExit:
-            await store.followExit()
+            let currentProxy = try followProxy()
+            guard env === store.environment, sample.map({ $0.proxy == currentProxy }) != false else {
+                throw ElsewhereIntentError(localizedStringResource: "这次出口变化已过期，请刷新出口后再跟随。")
+            }
+            await store.followExit(prefetched: sample?.exit)
         case .setCity(let city):
             guard let place = store.cities.first(where: { $0.id == city.id }) else {
                 throw ElsewhereIntentError(localizedStringResource: "常用城市里没有「\(city.name)」")
@@ -153,7 +171,7 @@ struct CityQuery: EntityQuery {
         // 冷启动时城市尚未载入，Siri 枚举候选不需要探测设备或查询出口。
         let cities = store.deviceStates.isEmpty ? try await store.environment.stateStore.load().cities : store.cities
         #endif
-        return cities.map { CityEntity(id: $0.id, name: $0.name) }
+        return cities.map { CityEntity(id: $0.id, name: $0.displayName) }
     }
 }
 

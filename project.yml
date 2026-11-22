@@ -1,6 +1,8 @@
 name: ElsewhereMobile
 options:
   bundleIdPrefix: com.elsewhere.mobile
+  developmentLanguage: en
+  knownRegions: [en, zh-Hans]
   deploymentTarget:
     iOS: "17.0"
   xcodeVersion: "16.0"
@@ -16,7 +18,7 @@ targets:
   ElsewhereMobile:
     type: application
     platform: iOS
-    sources: [App, Domain, Engine, Services, DesignSystem, Features, Intents]
+    sources: [App, Domain, Engine, Services, DesignSystem, Features, Intents, Resources]
     dependencies:
       - framework: build/ElsewhereCore.xcframework
         embed: false
@@ -76,6 +78,7 @@ targets:
       - path: Domain/DeviceModels.swift
       - path: Domain/ExitProxy.swift
       - path: Services/AppStateStore.swift
+      - path: Resources/Localizable.xcstrings
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.elsewhere.mobile.widgets
       CODE_SIGN_ENTITLEMENTS: Widgets/ElsewhereWidgets.entitlements
@@ -112,6 +115,7 @@ targets:
     sources:
       - PairingImportExtension
       - path: Services/PairingInbox.swift
+      - path: Resources/Localizable.xcstrings
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.elsewhere.mobile.pairingimport
       CODE_SIGN_ENTITLEMENTS: PairingImportExtension/ElsewherePairingImport.entitlements

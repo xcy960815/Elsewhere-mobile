@@ -16,9 +16,23 @@ struct ElsewhereMobileApp: App {
                     let state = try await env.stateStore.load()
                     guard env === store.environment, !env.isDemo else { refresh.setTaskCompleted(success: true); return }
                     Self.scheduleRefresh(settings: state.settings)
+                    guard state.settings.exitFeaturesEnabled, state.settings.watchMode != .off else {
+                        refresh.setTaskCompleted(success: true)
+                        return
+                    }
                     let proxy = try state.settings.parsedProxy.get()
-                    let selected = state.selectedDeviceID ?? store.selectedDevice?.id
-                    let targets = store.readyDevices.filter { state.settings.applyToAll || $0.id == selected }
+                    var devices = store.readyDevices
+                    if devices.isEmpty {
+                        devices = try await env.pairingStore.records().map { record in
+                            let id = record.probeID
+                            return TargetDevice(id: id, name: state.knownDeviceNames[id] ?? record.deviceName ?? record.endpointHost,
+                                deviceClass: "", productType: nil, osVersion: nil, endpointHost: record.endpointHost,
+                                paired: true, developerMode: nil, wifiEnabled: nil, timeZoneID: nil, cellular: nil, ddiMounted: nil)
+                        }.sorted { $0.id.rawValue < $1.id.rawValue }
+                    }
+                    guard env === store.environment else { refresh.setTaskCompleted(success: true); return }
+                    let selected = state.selectedDeviceID ?? devices.first?.id
+                    let targets = devices.filter { state.settings.applyToAll || $0.id == selected }
                     env.exitMonitor.handleBackgroundRefresh(refresh, settings: state.settings, proxy: proxy, targets: targets)
                 } catch { refresh.setTaskCompleted(success: false) }
             }
@@ -95,30 +109,20 @@ private struct MobileNavigation: View {
         .onChange(of: activeLoadFinished && showingSplash == false && scenePhase == .active && store.needsOnboarding) { _, needed in
             if needed { showingOnboarding = true }
         }
-        .onChange(of: scenePhase, initial: true) { previous, phase in
-            switch phase {
-            case .active:
-                Task {
-                    await store.handleSceneActive()
-                    let pending = await Task.detached(priority: .utility) { PairingInbox().drainPending() }.value
-                    var results = [String]()
-                    for item in pending {
-                        let name = item.suggestedName ?? String(localized: "共享配对文件")
-                        do {
-                            _ = try await store.importPairing(data: item.data, endpointHost: LoopbackTarget.defaultPeer, deviceName: nil)
-                            results.append(String(localized: "已导入 · \(name)"))
-                        } catch { results.append("\(name) · \(error.localizedDescription)") }
-                    }
-                    importReport.append(contentsOf: results)
-                    activeLoadFinished = true
-                }
-            case .inactive, .background:
-                guard previous != phase else { return }
-                ElsewhereMobileApp.scheduleRefresh(settings: store.settings)
-                Task {
-                    await store.handleSceneInactive()
-                }
-            @unknown default: break
+        .onChange(of: showingSplash == false && scenePhase == .active, initial: true) { _, ready in
+            guard ready else { return }
+            Task {
+                await store.handleSceneActive()
+                let results = await store.importPendingPairings()
+                importReport.append(contentsOf: results)
+                activeLoadFinished = true
+            }
+        }
+        .onChange(of: scenePhase) { previous, phase in
+            guard previous != phase, phase == .inactive || phase == .background else { return }
+            ElsewhereMobileApp.scheduleRefresh(settings: store.settings)
+            Task {
+                await store.handleSceneInactive()
             }
         }
         .onOpenURL { url in
@@ -127,6 +131,7 @@ private struct MobileNavigation: View {
                 do {
                     _ = try await store.importPairing(url: url, endpointHost: LoopbackTarget.defaultPeer, deviceName: nil)
                     importReport.append(String(localized: "已导入 · \(url.lastPathComponent)"))
+                    if !store.isDemo { await store.refreshDevices() }
                 } catch { importReport.append("\(url.lastPathComponent) · \(error.localizedDescription)") }
             }
         }
@@ -162,7 +167,7 @@ private struct MobileNavigation: View {
                         .scrollContentBackground(.hidden)
                         .background(alignment: .bottom) {
                             if selection != .map {
-                                CodeField(dark: scheme == .dark, strength: 0.14)
+                                CodeField(dark: scheme == .dark, animated: true, strength: 0.14)
                                     .frame(height: 170).allowsHitTesting(false)
                             }
                         }
@@ -182,10 +187,33 @@ private struct MobileNavigation: View {
 
     @ViewBuilder private func content(_ page: Page) -> some View {
         switch page {
-        case .location: LocationView()
+        case .location: LocationView(openCities: { selection = .cities })
         case .map: MapView()
-        case .cities: CitiesView()
+        case .cities: CitiesView(openMap: { selection = .map })
         case .settings: SettingsView(openOnboarding: { showingOnboarding = true }, replaySplash: { showingSplash = true })
         }
+    }
+}
+
+extension AppStore {
+    func importPendingPairings(from inbox: PairingInbox? = nil) async -> [String] {
+        guard !isDemo else { return [] }
+        let inbox = inbox ?? PairingInbox()
+        let env = environment
+        let pending = await Task.detached(priority: .utility) { inbox.pendingItems() }.value
+        var results = [String]()
+        var imported = false
+        for item in pending {
+            guard environment === env else { break }
+            let name = item.suggestedName ?? String(localized: "共享配对文件")
+            do {
+                _ = try await importPairing(data: item.data, endpointHost: LoopbackTarget.defaultPeer, deviceName: nil)
+                await Task.detached(priority: .utility) { inbox.acknowledge(id: item.id) }.value
+                imported = true
+                results.append(String(localized: "已导入 · \(name)"))
+            } catch { results.append("\(name) · \(error.localizedDescription)") }
+        }
+        if imported, environment === env { await refreshDevices() }
+        return results
     }
 }

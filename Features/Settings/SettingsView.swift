@@ -15,7 +15,7 @@ struct SettingsView: View {
                 NavigationLink {
                     PairingManagementView()
                 } label: {
-                    LabeledContent("设备与配对", value: "\(store.pairingRecords.count) 个配对 · \(store.readyDevices.count) 台就绪")
+                    LabeledContent("设备与配对", value: String(localized: "\(store.pairingRecords.count) 个配对 · \(store.readyDevices.count) 台就绪"))
                 }
                 Toggle("同时修改所有设备", isOn: setting(\.applyToAll))
                 Toggle("重新连接后恢复定位", isOn: setting(\.autoRestore))
@@ -24,14 +24,7 @@ struct SettingsView: View {
                     Text("内置通道").tag(ChannelMode.builtInTunnel)
                 }
                 .pickerStyle(.segmented)
-                let status: LocalizedStringKey = switch store.tunnelStatus {
-                case .disconnected: "已断开"
-                case .connecting: "连接中"
-                case .connected: "已连接"
-                case .disconnecting: "正在断开"
-                case .unavailable: "不可用"
-                }
-                LabeledContent("内置通道状态") { Text(status) }
+                LabeledContent("内置通道状态", value: store.tunnelStatus.localizedTitle)
                 if store.settings.channelMode == .builtInTunnel {
                     Toggle("操作完成后自动断开", isOn: setting(\.autoDisconnectTunnel))
                     Text("断开本次启动的内置通道，释放系统 VPN 槽位供代理 App 使用。")

@@ -19,6 +19,7 @@ private struct MapPin: Identifiable {
     let gps: WGS84Coordinate
     var name: String?
     var osm = false
+    var needsReverseLookup = false
 }
 
 struct MapView: View {
@@ -27,6 +28,7 @@ struct MapView: View {
     @State private var position = MapCameraPosition.automatic
     @State private var look = MapLook.standard
     @State private var pin: MapPin?
+    @State private var lastSeenRecord: AppliedLocationRecord?
     @State private var expanded = true
     @State private var enteringCoordinates = false
     @State private var coordinateText = ""
@@ -43,7 +45,15 @@ struct MapView: View {
         MapReader { proxy in
             Map(position: $position) {
                 if let record = store.selectedRecord {
-                    Marker("模拟位置 · \(record.name)", systemImage: "iphone", coordinate: ChinaCoordinate.gpsToMap(record.coordinate)).tint(.blue)
+                    let point = ChinaCoordinate.gpsToMap(record.coordinate)
+                    switch record.confidence {
+                    case .confirmed, .lastSet:
+                        Marker("模拟位置 · \(record.name)", systemImage: "iphone", coordinate: point).tint(.blue)
+                    case .unknownOutcome:
+                        Marker("模拟待确认 · \(record.name)", systemImage: "questionmark.circle", coordinate: point).tint(.orange)
+                    case .clearUnknown:
+                        Marker("清除待确认 · \(record.name)", systemImage: "questionmark.circle", coordinate: point).tint(.orange)
+                    }
                 }
                 if store.settings.exitFeaturesEnabled, let exit = store.exit {
                     Marker("代理出口 · \(exit.displayCity)", systemImage: "globe", coordinate: ChinaCoordinate.gpsToMap(exit.coordinate)).tint(.orange)
@@ -73,12 +83,25 @@ struct MapView: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $enteringCoordinates) { coordinateEntry }
-        .onChange(of: store.selectedRecord?.coordinate ?? (store.settings.exitFeaturesEnabled ? store.exit?.coordinate : nil),
-                  initial: true) { _, gps in
-            if position == .automatic, pin == nil, let gps { jump(to: ChinaCoordinate.gpsToMap(gps)) }
+        .onChange(of: store.selectedRecord, initial: true) { _, record in
+            updateCamera(for: record)
+        }
+        .onChange(of: store.settings.exitFeaturesEnabled ? store.exit?.coordinate : nil, initial: true) { _, gps in
+            if store.selectedRecord == nil, position == .automatic, pin == nil, let gps {
+                jump(to: ChinaCoordinate.gpsToMap(gps))
+            }
+        }
+        .onChange(of: store.isDemo, initial: true) { _, isDemo in
+            if search.isDemo != isDemo {
+                lookup?.cancel()
+                pin = nil
+                notFound = false
+            }
+            search.isDemo = isDemo
         }
         .task(id: pin?.id) {
-            guard let current = pin, current.name == nil, let name = await Geo.placeName(for: current.gps),
+            guard let current = pin, current.needsReverseLookup, current.name == nil,
+                  let name = await Geo.placeName(for: current.gps, isDemo: store.isDemo), !Task.isCancelled,
                   pin?.id == current.id, pin?.name == nil else { return }
             pin?.name = name
         }
@@ -96,7 +119,10 @@ struct MapView: View {
                     .onSubmit { startSearch { await submitSearch() } }
                 if search.searching { ProgressView().controlSize(.small) }
                 if !search.query.isEmpty {
-                    Button { updateQuery("") } label: { Label("清空搜索", systemImage: "xmark.circle.fill").labelStyle(.iconOnly) }
+                    Button { updateQuery("") } label: {
+                        Label("清空搜索", systemImage: "xmark.circle.fill").labelStyle(.iconOnly)
+                            .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    }
                 }
                 Button {
                     lookup?.cancel()
@@ -116,20 +142,20 @@ struct MapView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(search.osmResults) { place in
-                            suggestion(place.name, place.detail, symbol: "globe", source: "OpenStreetMap · Photon") {
-                                selectGPS(place.coordinate, name: place.name, osm: true)
+                            suggestion(place.name, place.detail, symbol: "globe", source: search.isDemo ? String(localized: "常用城市") : "OpenStreetMap · Photon") {
+                                selectGPS(place.coordinate, name: place.name, osm: !search.isDemo)
                             }
                         }
                         ForEach(search.results, id: \.self) { item in
-                            suggestion(item.title, item.subtitle, symbol: "map", source: "Apple 地图") {
-                                startSearch { selectApple(await search.resolve(item)) }
+                            suggestion(item.title, item.subtitle, symbol: "map", source: String(localized: "Apple 地图")) {
+                                startSearch { selectMatch(await search.resolve(item)) }
                             }
                         }
                         if let error = search.appleError { Text("Apple 地图 · \(error)") }
                         if let error = search.photonError { Text("Photon · \(error)") }
                         if let error = search.nominatimError { Text("Nominatim · \(error)") }
                         if notFound { Text("没有找到地点，请换个关键词。") }
-                        if !search.osmResults.isEmpty { Text("© OpenStreetMap contributors") }
+                        if !search.isDemo, !search.osmResults.isEmpty { Text("© OpenStreetMap contributors") }
                     }
                     .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.vertical, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -196,7 +222,7 @@ struct MapView: View {
                         Spacer()
                         Image(systemName: expanded ? "chevron.down" : "chevron.up")
                     }
-                    .frame(minHeight: 32).contentShape(Rectangle())
+                    .frame(minHeight: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint(expanded ? "收起操作卡片" : "展开操作卡片")
@@ -211,7 +237,7 @@ struct MapView: View {
                             .font(.caption.monospacedDigit()).textSelection(.enabled)
                         if pin.osm { Text("© OpenStreetMap contributors · ODbL 1.0").font(.caption2) }
                         HStack {
-                            let saved = store.cities.contains { $0.name == displayName && $0.coordinate == pin.gps }
+                            let saved = store.cities.contains { $0.displayName == displayName && $0.coordinate == pin.gps }
                             Button(saved ? "已收藏" : "收藏为常用城市") {
                                 let place = Place(name: displayName, coordinate: pin.gps)
                                 Task {
@@ -249,9 +275,7 @@ struct MapView: View {
                             }
                             .disabled(!store.canOperate || store.customProxyInvalid)
                         }
-                        if store.selectedRecord != nil {
-                            Button("恢复真实定位") { Task { await store.clearLocation() } }.disabled(!store.canOperate)
-                        }
+                        Button("恢复真实定位") { Task { await store.clearLocation() } }.disabled(!store.canOperate)
                     }
                     if let busy = store.busyMessage { ProgressView { Text(busy) }.progressViewStyle(.linear) }
                     else if let device = store.selectedDevice { Label(device.name, systemImage: "iphone").font(.caption) }
@@ -275,30 +299,23 @@ struct MapView: View {
     }
 
     private func submitSearch() async {
-        let text = search.query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        if case .success(let gps) = CoordinateParser.parse(text) { selectGPS(gps); return }
-        if let place = await search.lookUpOSM(text), !Task.isCancelled {
-            selectGPS(place.coordinate, name: place.name, osm: true)
-            return
-        }
-        guard !Task.isCancelled else { return }
-        var match: (String, CLLocationCoordinate2D)?
-        if let first = search.results.first { match = await search.resolve(first) }
-        if match == nil, !Task.isCancelled { match = await search.resolve(text: text) }
-        selectApple(match)
+        guard !search.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        selectMatch(await search.submit(search.query))
     }
 
-    private func selectApple(_ match: (String, CLLocationCoordinate2D)?) {
+    private func selectMatch(_ match: SearchMatch?) {
         guard !Task.isCancelled else { return }
-        guard let (name, map) = match, let gps = ChinaCoordinate.mapToGPS(map) else { notFound = true; return }
-        select(MapPin(map: map, gps: gps, name: name))
-        jump(to: map)
+        switch match {
+        case .coordinate(let gps): selectGPS(gps)
+        case .osm(let place): selectGPS(place.coordinate, name: place.name, osm: !search.isDemo)
+        case .apple(let name, let gps): selectGPS(gps, name: name)
+        case nil: notFound = true
+        }
     }
 
     private func dropPin(at point: CGPoint, in proxy: MapProxy) {
         guard let map = proxy.convert(point, from: .local), let gps = ChinaCoordinate.mapToGPS(map) else { return }
-        select(MapPin(map: map, gps: gps))
+        select(MapPin(map: map, gps: gps, needsReverseLookup: true))
     }
 
     private func selectGPS(_ gps: WGS84Coordinate, name: String? = nil, osm: Bool = false) {
@@ -312,6 +329,21 @@ struct MapView: View {
         searchFocused = false
         pin = point
         expanded = true
+    }
+
+    private func updateCamera(for record: AppliedLocationRecord?) {
+        let previous = lastSeenRecord
+        lastSeenRecord = record
+        guard let record else { return }
+        let changed = previous?.deviceID != record.deviceID || previous?.coordinate != record.coordinate ||
+            previous?.appliedAt != record.appliedAt || previous?.confidence != record.confidence
+        if changed && record.confidence.isConfirmedSimulated {
+            lookup?.cancel()
+            pin = nil
+        } else if position != .automatic || pin != nil {
+            return
+        }
+        jump(to: ChinaCoordinate.gpsToMap(record.coordinate))
     }
 
     private func jump(to map: CLLocationCoordinate2D) {

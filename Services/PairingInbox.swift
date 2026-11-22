@@ -77,13 +77,42 @@ struct PairingInbox: Sendable {
         return try enqueue(data: data, suggestedName: fileURL.lastPathComponent)
     }
 
-    func drainPending() -> [PendingPairingItem] {
-        guard let directory, let files = try? pendingFiles(in: directory, at: now()) else { return [] }
+    func pendingItems() -> [PendingPairingItem] {
+        let date = now()
+        guard let directory, let files = try? pendingFiles(in: directory, at: date) else { return [] }
         return files.compactMap { file -> PendingPairingItem? in
-            guard let data = try? Data(contentsOf: file),
-                  (try? FileManager.default.removeItem(at: file)) != nil else { return nil }
-            return try? PropertyListDecoder().decode(PendingPairingItem.self, from: data)
+            guard let data = try? Data(contentsOf: file) else { return nil }
+            guard let item = try? PropertyListDecoder().decode(PendingPairingItem.self, from: data),
+                  date.timeIntervalSince(item.receivedAt) < Self.expirationInterval else {
+                try? FileManager.default.removeItem(at: file)
+                return nil
+            }
+            return item
         }.sorted { $0.receivedAt < $1.receivedAt }
+    }
+
+    func acknowledge(id: UUID) {
+        guard let directory else { return }
+        _ = acknowledge(id: id, in: directory)
+    }
+
+    func drainPending() -> [PendingPairingItem] {
+        guard let directory else { return [] }
+        return pendingItems().filter { acknowledge(id: $0.id, in: directory) }
+    }
+
+    private func acknowledge(id: UUID, in directory: URL) -> Bool {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return false }
+        func matches(_ file: URL) -> Bool {
+            guard file.pathExtension == "plist" else { return false }
+            return (try? PropertyListDecoder().decode(PendingPairingItem.self, from: Data(contentsOf: file)))?.id == id
+        }
+        if let named = files.first(where: { $0.lastPathComponent.hasSuffix("_\(id).plist") }), matches(named) {
+            return (try? fm.removeItem(at: named)) != nil
+        }
+        guard let file = files.first(where: matches) else { return false }
+        return (try? fm.removeItem(at: file)) != nil
     }
 
     private func pendingFiles(in directory: URL, at date: Date) throws -> [URL] {
@@ -91,8 +120,7 @@ struct PairingInbox: Sendable {
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         return files.filter { file in
             // 时间戳也在暂存文件名中，扩展被中断后仍能清理未写完整的凭据。
-            guard let received = TimeInterval(file.lastPathComponent.prefix { $0 != "_" }) else { return false }
-            if received <= cutoff {
+            if let received = TimeInterval(file.lastPathComponent.prefix { $0 != "_" }), received <= cutoff {
                 try? FileManager.default.removeItem(at: file)
                 return false
             }

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Network
 import os
@@ -61,11 +62,11 @@ struct ExitIPService: Sendable {
         }
         let data = try await fetch("https://ipinfo.io/json", proxy: proxy)
         guard let raw = try? JSONDecoder().decode(Response.self, from: data),
-              IPv4Address(raw.ip) != nil || IPv6Address(raw.ip) != nil,
+              let ip = canonicalIP(raw.ip),
               case .success(let coordinate) = CoordinateParser.parse(raw.loc) else {
             throw ExitIPError.badResponse(String(decoding: data.prefix(300), as: UTF8.self))
         }
-        return ExitInfo(ip: raw.ip, city: raw.city ?? "", region: raw.region ?? "", country: raw.country ?? "",
+        return ExitInfo(ip: ip, city: raw.city ?? "", region: raw.region ?? "", country: raw.country ?? "",
                         coordinate: coordinate, org: raw.org, sampledAt: now())
     }
 
@@ -83,11 +84,28 @@ struct ExitIPService: Sendable {
 
     private func ip(from url: String, proxy: ExitProxyAddress?) async throws -> String {
         let data = try await fetch(url, proxy: proxy)
-        let ip = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !ip.isEmpty, ip.count <= 45 else {
+        guard let ip = canonicalIP(String(decoding: data, as: UTF8.self)) else {
             throw ExitIPError.badResponse(String(decoding: data.prefix(300), as: UTF8.self))
         }
         return ip
+    }
+
+    private func canonicalIP(_ raw: String) -> String? {
+        let ip = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ip.isEmpty, ip.utf8.count < Int(INET6_ADDRSTRLEN),
+              ip.allSatisfy({ $0.isHexDigit || $0 == "." || $0 == ":" }) else { return nil }
+        let bytes: Data
+        let family: Int32
+        if let address = IPv4Address(ip) {
+            (bytes, family) = (address.rawValue, AF_INET)
+        } else if let address = IPv6Address(ip) {
+            (bytes, family) = (address.rawValue, AF_INET6)
+        } else { return nil }
+        return bytes.withUnsafeBytes { source in
+            withUnsafeTemporaryAllocation(of: CChar.self, capacity: Int(INET6_ADDRSTRLEN)) { buffer in
+                Darwin.inet_ntop(family, source.baseAddress, buffer.baseAddress, socklen_t(buffer.count)).map { String(cString: $0) }
+            }
+        }
     }
 
     private func fetch(_ url: String, proxy: ExitProxyAddress?) async throws -> Data {

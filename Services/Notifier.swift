@@ -34,11 +34,12 @@ struct UserNotificationAdapter: NotificationCenterAdapter {
 
 final class Notifier: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
     static let exitChangedCategory = "EXIT_CHANGED"
+    static let eventIDKey = "eventID"
     static let followAction = "FOLLOW_EXIT"
 
     private let center: NotificationCenterAdapter
     @MainActor private var authorization: Task<Void, Never>?
-    @MainActor var onFollow: (@MainActor () -> Void)?
+    @MainActor var onFollow: (@MainActor (UUID?) -> Void)?
 
     init(center: NotificationCenterAdapter = UserNotificationAdapter()) {
         self.center = center
@@ -56,11 +57,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate, @unchecked Sen
         authorization = nil
     }
 
-    func post(title: String, body: String, category: String? = nil) {
+    func post(title: String, body: String, category: String? = nil, eventID: UUID? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         if let category { content.categoryIdentifier = category }
+        if let eventID { content.userInfo[Self.eventIDKey] = eventID.uuidString }
         center.post(content)
     }
 
@@ -70,12 +72,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate, @unchecked Sen
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        await handleResponse(category: response.notification.request.content.categoryIdentifier, action: response.actionIdentifier)
+        let content = response.notification.request.content
+        let eventID = (content.userInfo[Self.eventIDKey] as? String).flatMap(UUID.init(uuidString:))
+        await handleResponse(category: content.categoryIdentifier, action: response.actionIdentifier, eventID: eventID)
     }
 
-    @MainActor func handleResponse(category: String, action: String) {
+    @MainActor func handleResponse(category: String, action: String, eventID: UUID?) {
         guard category == Self.exitChangedCategory,
               action == Self.followAction || action == UNNotificationDefaultActionIdentifier else { return }
-        onFollow?()
+        onFollow?(eventID)
     }
 }

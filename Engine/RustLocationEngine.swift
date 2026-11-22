@@ -60,8 +60,12 @@ final class RustLocationEngine: LocationEngineProtocol {
                      onStage: @escaping @Sendable (EngineOperationStage) -> Void) async throws(EngineError) {
         let (record, request) = try await pairedRequest(EwCommandSetLocation, for: deviceID, coordinate: coordinate)
         if try await isDDIMounted(request, deviceAlias: record.deviceName, onStage: onStage) {
-            _ = try await handle.submit(request, deviceAlias: record.deviceName, onStage: onStage)
-            return
+            do throws(EngineError) {
+                _ = try await handle.submit(request, deviceAlias: record.deviceName, onStage: onStage)
+                return
+            } catch {
+                guard error.code == .ddi_missing, !error.outcomeUnknown else { throw error }
+            }
         }
         try await submitWithPreparedDDI(request, deviceAlias: record.deviceName, onStage: onStage)
     }
@@ -123,7 +127,7 @@ final class RustLocationEngine: LocationEngineProtocol {
             }
         } catch let error as EngineError {
             throw error
-        } catch is CancellationError {
+        } catch is CancellationError, DDIRepositoryError.cancelled {
             throw EngineError(code: .cancelled, stage: EngineOperationStage.verifyingDDI.rawValue, deviceAlias: deviceAlias,
                               message: String(localized: "操作已取消"))
         } catch DDIRepositoryError.verificationFailed {
