@@ -45,7 +45,7 @@ private struct StubNotificationCenter: NotificationCenterAdapter {
         }
     }
     func post(_ content: UNNotificationContent) {
-        let fields = [content.title, content.body, content.categoryIdentifier]
+        let fields = [content.title, content.body, content.categoryIdentifier] + [content.userInfo[Notifier.eventIDKey] as? String].compactMap { $0 }
         state.withLock { $0.post = fields }
     }
 }
@@ -64,7 +64,7 @@ final class CoreServicesTests: XCTestCase {
     private var snapshot: WidgetSnapshot {
         WidgetSnapshot(selectedDeviceName: record.deviceName, locationName: record.name, coordinate: record.coordinate,
                        source: record.source, appliedAt: record.appliedAt, exitSummary: "Tokyo, Japan",
-                       exitFeaturesEnabled: true, updatedAt: record.appliedAt)
+                       exitFeaturesEnabled: true, updatedAt: record.appliedAt, locationState: .simulated)
     }
 
     func testExitLookupParsesLocationAndUsesSamplingClock() async throws {
@@ -94,7 +94,7 @@ final class CoreServicesTests: XCTestCase {
 
     func testCurrentIPFallsBackThroughTheSameProxy() async throws {
         let proxy = try XCTUnwrap(ExitProxyAddress("localhost:8123"))
-        for first in [StubHTTPTransport.Reply.failure(.timedOut), .http(503, ""), .http(200, " \n"), .http(200, String(repeating: "x", count: 46))] {
+        for first in [StubHTTPTransport.Reply.failure(.timedOut), .http(503, ""), .http(200, "error"), .http(200, " \n"), .http(200, String(repeating: "x", count: 46))] {
             let transport = StubHTTPTransport(first, .http(200, "2001:db8::5\n"))
             let ip = try await ExitIPService(transport: transport).currentIP(proxy: proxy)
             XCTAssertEqual(ip, "2001:db8::5")
@@ -109,6 +109,16 @@ final class CoreServicesTests: XCTestCase {
         } catch ExitIPError.proxy(let address, _) { XCTAssertEqual(address, proxy.display) }
         let calls = await failed.calls
         XCTAssertEqual(calls.map(\.proxy), [proxy, proxy])
+    }
+
+    func testIPv6ProbeAndDetailUseTheSameCanonicalForm() async throws {
+        let transport = StubHTTPTransport(.http(200, "2001:0DB8:0:0:0:0:0000:0005"),
+                                         .http(200, #"{"ip":"2001:db8::5","loc":"0,0"}"#))
+        let service = ExitIPService(transport: transport)
+        let ip = try await service.currentIP()
+        let detail = try await service.lookup()
+        XCTAssertEqual(ip, "2001:db8::5")
+        XCTAssertEqual(ip, detail.ip)
     }
 
     func testCurrentIPStopsAfterSuccessfulDirectProbe() async throws {
@@ -221,19 +231,20 @@ final class CoreServicesTests: XCTestCase {
         async let second: Void = notifier.requestAuthorizationIfNeeded()
         _ = await (first, second)
         await notifier.requestAuthorizationIfNeeded()
-        notifier.post(title: "出口变了", body: "Tokyo", category: Notifier.exitChangedCategory)
+        let id = UUID()
+        notifier.post(title: "出口变了", body: "Tokyo", category: Notifier.exitChangedCategory, eventID: id)
         let state = center.state.withLock { $0 }
         XCTAssertTrue(state.registered)
         XCTAssertEqual(state.prompts, 1)
-        XCTAssertEqual(state.post, ["出口变了", "Tokyo", "EXIT_CHANGED"])
-        var count = 0
-        notifier.onFollow = { count += 1 }
-        notifier.handleResponse(category: "other", action: "FOLLOW_EXIT")
-        notifier.handleResponse(category: "EXIT_CHANGED", action: UNNotificationDismissActionIdentifier)
-        XCTAssertEqual(count, 0)
-        notifier.handleResponse(category: "EXIT_CHANGED", action: "FOLLOW_EXIT")
-        notifier.handleResponse(category: "EXIT_CHANGED", action: UNNotificationDefaultActionIdentifier)
-        XCTAssertEqual(count, 2)
+        XCTAssertEqual(state.post, ["出口变了", "Tokyo", "EXIT_CHANGED", id.uuidString])
+        var received = [UUID?]()
+        notifier.onFollow = { received.append($0) }
+        notifier.handleResponse(category: "other", action: "FOLLOW_EXIT", eventID: id)
+        notifier.handleResponse(category: "EXIT_CHANGED", action: UNNotificationDismissActionIdentifier, eventID: id)
+        XCTAssertTrue(received.isEmpty)
+        notifier.handleResponse(category: "EXIT_CHANGED", action: "FOLLOW_EXIT", eventID: id)
+        notifier.handleResponse(category: "EXIT_CHANGED", action: UNNotificationDefaultActionIdentifier, eventID: nil)
+        XCTAssertEqual(received, [id, nil])
     }
 
     func testDiskStateSurvivesReopeningAndIndividualUpdates() async throws {
@@ -260,19 +271,71 @@ final class CoreServicesTests: XCTestCase {
         XCTAssertEqual(cleared, AppStateStore.State(settings: settings, cities: [], records: saved.records))
     }
 
+    func testTwoStoresMergeConcurrentDeviceReceipts() async throws {
+        let directory = try makeTemporaryDirectory()
+        let first = AppStateStore(storageDirectory: directory, snapshotSuiteName: nil)
+        let second = AppStateStore(storageDirectory: directory, snapshotSuiteName: nil)
+        let a = record
+        let b = AppliedLocationRecord(deviceID: DeviceID(rawValue: "second")!, deviceName: "Second", name: a.name,
+            coordinate: a.coordinate, appliedAt: a.appliedAt, source: a.source, exitIP: nil, confidence: .confirmed)
+        async let one = first.commitDeviceRecord(a, for: a.deviceID, deviceName: a.deviceName)
+        async let two = second.commitDeviceRecord(b, for: b.deviceID, deviceName: b.deviceName)
+        _ = try await (one, two)
+        let state = try await first.load()
+        XCTAssertEqual(state.records, [a.deviceID: a, b.deviceID: b])
+        XCTAssertEqual(state.knownDeviceNames, [a.deviceID: a.deviceName, b.deviceID: b.deviceName])
+    }
+
+    func testMarkSplashSeenPreservesPersistedSettings() async throws {
+        let directory = try makeTemporaryDirectory()
+        let first = AppStateStore(storageDirectory: directory, snapshotSuiteName: nil)
+        var settings = AppSettings(watchMode: .off, applyToAll: true, customProxyText: "localhost:8123")
+        try await first.saveSettings(settings)
+        try await AppStateStore(storageDirectory: directory, snapshotSuiteName: nil).markSplashSeen()
+        settings.hasSeenSplash = true
+        let saved = try await first.load()
+        XCTAssertEqual(saved.settings, settings)
+    }
+
+    func testDecodesLegacyStateAndWidgetSnapshot() throws {
+        let original = AppStateStore.State(records: [record.deviceID: record])
+        let data = try JSONEncoder().encode(original)
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        fields.removeValue(forKey: "lastAppliedBatchIDs")
+        fields.removeValue(forKey: "knownDeviceNames")
+        let legacy = try JSONSerialization.data(withJSONObject: fields)
+        XCTAssertEqual(try JSONDecoder().decode(AppStateStore.State.self, from: legacy), original)
+
+        let display = try JSONEncoder().encode(snapshot)
+        var old = try XCTUnwrap(JSONSerialization.jsonObject(with: display) as? [String: Any])
+        old.removeValue(forKey: "locationState")
+        for expected in [WidgetLocationState.simulated, .real] {
+            if expected == .real { old.removeValue(forKey: "locationName") }
+            let data = try JSONSerialization.data(withJSONObject: old)
+            XCTAssertEqual(try JSONDecoder().decode(WidgetSnapshot.self, from: data).locationState, expected)
+        }
+    }
+
     func testWidgetSuiteContainsOnlyDisplayFields() async throws {
         let suite = "ElsewhereTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = AppStateStore(storageDirectory: try makeTemporaryDirectory(), snapshotSuiteName: suite)
-        try await store.saveSettings(AppSettings(customProxyText: "private.example:1234"))
-        try await store.writeWidgetSnapshot(snapshot)
+        try await store.saveSettings(AppSettings(customProxyText: "user:proxy-secret@private.example:1234"))
+        try await store.saveSelectedDeviceID(record.deviceID)
+        let state = try await store.commitDeviceRecord(record, for: record.deviceID, deviceName: record.deviceName)
+        try await store.writeDisplaySnapshot(state: state, selectedDeviceName: nil, exitEnabled: true,
+                                            exitSummary: snapshot.exitSummary, at: record.appliedAt)
         XCTAssertEqual(AppStateStore.readWidgetSnapshot(suiteName: suite), snapshot)
         let domain = try XCTUnwrap(defaults.persistentDomain(forName: suite))
         XCTAssertEqual(Set(domain.keys), ["widgetSnapshot"])
         let data = try XCTUnwrap(domain["widgetSnapshot"] as? Data)
         let fields = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: NSObject])
-        XCTAssertEqual(Set(fields.keys), ["selectedDeviceName", "locationName", "coordinate", "source", "appliedAt", "exitSummary", "exitFeaturesEnabled", "updatedAt"])
+        XCTAssertEqual(Set(fields.keys), ["selectedDeviceName", "locationName", "coordinate", "source", "appliedAt", "exitSummary", "exitFeaturesEnabled", "updatedAt", "locationState"])
+        let encoded = String(decoding: data, as: UTF8.self)
+        XCTAssertFalse(encoded.contains("proxy-secret"))
+        XCTAssertFalse(encoded.contains("private.example"))
+        XCTAssertEqual(fields["locationState"] as? String, "simulated")
         let point = try XCTUnwrap(fields["coordinate"] as? [String: NSNumber])
         XCTAssertEqual(Set(point.keys), ["latitude", "longitude"])
     }

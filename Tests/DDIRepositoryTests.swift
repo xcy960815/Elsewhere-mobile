@@ -4,11 +4,11 @@ import XCTest
 
 actor LocalDDIDownloader: DDIDownloader {
     private(set) var files: [String] = []
-    private var gate: AsyncStream<Void>?
+    private var gate: (stream: AsyncStream<Void>, onStart: @Sendable () -> Void)?
 
-    func pauseNextDownload() -> AsyncStream<Void>.Continuation {
+    func pauseNextDownload(onStart: @escaping @Sendable () -> Void = {}) -> AsyncStream<Void>.Continuation {
         let (stream, continuation) = AsyncStream<Void>.makeStream()
-        gate = stream
+        gate = (stream, onStart)
         return continuation
     }
 
@@ -16,9 +16,29 @@ actor LocalDDIDownloader: DDIDownloader {
         files.append(url.lastPathComponent)
         if let gate {
             self.gate = nil
-            for await _ in gate {}
+            gate.onStart()
+            for await _ in gate.stream {}
+            try Task.checkCancellation()
         }
         return url
+    }
+}
+
+private struct PinnedMirrorDownloader: DDIDownloader {
+    let mirror: URL
+    let revision: String
+    let rateLimited: Bool
+
+    func download(from url: URL) async throws -> URL {
+        let file = mirror.appending(path: UUID().uuidString)
+        if url.host == "api.github.com" {
+            guard !rateLimited else { throw DDIRepositoryError.httpStatus(403) }
+            try JSONEncoder().encode(["sha": revision]).write(to: file)
+        } else {
+            guard url.pathComponents.contains(revision) else { throw DDIRepositoryError.httpStatus(404) }
+            try FileManager.default.copyItem(at: mirror.appending(component: url.lastPathComponent), to: file)
+        }
+        return file
     }
 }
 
@@ -61,6 +81,94 @@ final class DDIRepositoryTests: XCTestCase {
         XCTAssertEqual(try RustCoreBridge.verifyDDI(at: first.directory), digest)
         XCTAssertEqual(try String(contentsOf: directory.appending(path: "current.txt"), encoding: .utf8), first.versionID)
         for lease in leases { await repository.release(lease) }
+    }
+
+    func testCancellingOneWaiterReturnsWhileOtherWaiterStillDownloads() async throws {
+        let directory = try makeTemporaryDirectory(), mirror = directory.appending(path: "mirror")
+        let digest = try writeRelease(to: mirror)
+        let downloader = LocalDDIDownloader()
+        let repository = DDIRepository(baseDirectory: directory, mirrorBaseURL: mirror, downloader: downloader,
+                                       verifier: RustLocationEngine.makeDDIVerifier())
+        let downloading = expectation(description: "下载已暂停")
+        let resume = await downloader.pauseNextDownload { downloading.fulfill() }
+        let returned = expectation(description: "已取消的请求独立返回")
+        let first = Task {
+            defer { returned.fulfill() }
+            do throws(DDIRepositoryError) {
+                let lease = try await repository.acquirePrepared()
+                await repository.release(lease)
+                XCTFail("取消的请求不应取得租约")
+            } catch { XCTAssertEqual(error, .cancelled) }
+        }
+        await fulfillment(of: [downloading], timeout: 5)
+        let joined = expectation(description: "另一个等待者已加入下载")
+        let second = Task {
+            try await repository.acquirePrepared { stage in
+                if stage == EngineOperationStage.downloadingDDI.rawValue { joined.fulfill() }
+            }
+        }
+        await fulfillment(of: [joined], timeout: 5)
+        first.cancel()
+        await fulfillment(of: [returned], timeout: 5)
+        resume.finish()
+        await first.value
+        let lease = try await second.value
+        XCTAssertEqual(try RustCoreBridge.verifyDDI(at: lease.directory), digest)
+        let files = await downloader.files
+        XCTAssertEqual(files, DDIRepository.requiredFiles)
+        await repository.release(lease)
+    }
+
+    func testCancellingLastWaiterCancelsDownloadAndRemovesStaging() async throws {
+        let directory = try makeTemporaryDirectory(), mirror = directory.appending(path: "mirror")
+        _ = try writeRelease(to: mirror)
+        let downloader = LocalDDIDownloader()
+        let repository = DDIRepository(baseDirectory: directory, mirrorBaseURL: mirror, downloader: downloader,
+                                       verifier: RustLocationEngine.makeDDIVerifier())
+        let downloading = expectation(description: "下载已暂停")
+        let cancelled = expectation(description: "下载收到取消")
+        let returned = expectation(description: "唯一的等待者已返回")
+        let resume = await downloader.pauseNextDownload { downloading.fulfill() }
+        resume.onTermination = { reason in
+            if case .cancelled = reason { cancelled.fulfill() }
+        }
+        let task = Task {
+            defer { returned.fulfill() }
+            do throws(DDIRepositoryError) {
+                let lease = try await repository.acquirePrepared()
+                await repository.release(lease)
+                XCTFail("取消的请求不应取得租约")
+            } catch { XCTAssertEqual(error, .cancelled) }
+        }
+        await fulfillment(of: [downloading], timeout: 5)
+        let staging = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .first { $0.lastPathComponent.hasPrefix("staging-") })
+        task.cancel()
+        await fulfillment(of: [returned, cancelled], timeout: 5)
+        resume.finish()
+        await task.value
+        let deadline = ContinuousClock.now + .seconds(5)
+        while FileManager.default.fileExists(atPath: staging.path), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appending(path: "current.txt").path))
+        let files = await downloader.files
+        XCTAssertEqual(files, ["BuildManifest.plist"])
+    }
+
+    func testFreshRepositoryReusesPersistedCommitWhenGitHubRateLimits() async throws {
+        let directory = try makeTemporaryDirectory(), mirror = directory.appending(path: "mirror")
+        let digest = try writeRelease(to: mirror)
+        let revision = String(repeating: "0123456789", count: 4)
+        for rateLimited in [false, true] {
+            let downloader = PinnedMirrorDownloader(mirror: mirror, revision: revision, rateLimited: rateLimited)
+            let repository = DDIRepository(baseDirectory: directory, downloader: downloader, verifier: RustLocationEngine.makeDDIVerifier())
+            let lease = try await repository.acquirePrepared(forceRefresh: true)
+            XCTAssertEqual(try RustCoreBridge.verifyDDI(at: lease.directory), digest)
+            XCTAssertEqual(try String(contentsOf: directory.appending(path: "pinned-commit.txt"), encoding: .utf8), revision)
+            await repository.release(lease)
+        }
     }
 
     func testBadDigestAndMissingFilesPreserveThePublishedRelease() async throws {

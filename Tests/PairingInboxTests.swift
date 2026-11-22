@@ -38,6 +38,27 @@ final class PairingInboxTests: XCTestCase {
         }
     }
 
+    func testPendingItemsSurviveReadAndOnlyAcknowledgedImportsDisappear() throws {
+        let directory = try makeTemporaryDirectory()
+        let date = Date(timeIntervalSince1970: 1_000)
+        let inbox = PairingInbox(directory: directory, now: { date.addingTimeInterval(1) })
+        let retry = try inbox.enqueue(data: Data([2]), suggestedName: "retry.plist")
+        let imported = try PairingInbox(directory: directory, now: { date }).enqueue(data: Data([1]), suggestedName: nil)
+        let corrupt = directory.appending(path: "damaged.plist")
+        try Data([0xff]).write(to: corrupt)
+
+        XCTAssertEqual(inbox.pendingItems().map(\.id), [imported, retry])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: corrupt.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).count, 2)
+        inbox.acknowledge(id: imported)
+
+        let reopened = PairingInbox(directory: directory, now: { date.addingTimeInterval(2) })
+        XCTAssertEqual(reopened.pendingItems(), [PendingPairingItem(id: retry, suggestedName: "retry.plist",
+                                                                   data: Data([2]), receivedAt: date.addingTimeInterval(1))])
+        reopened.acknowledge(id: retry)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+
     func testDrainDeletesExpiredItemAndKeepsFreshItem() throws {
         let directory = try makeTemporaryDirectory()
         let date = Date(timeIntervalSince1970: 1_000)

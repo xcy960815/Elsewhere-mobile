@@ -3,6 +3,27 @@ import XCTest
 @testable import ElsewhereMobile
 
 final class ChinaCoordinateTests: XCTestCase {
+    func testKnownPointsStayWithinFiveMetresInBothDirections() throws {
+        // 天安门、外滩的参考点对：https://www.w3ctool.com/tools/map-coordinate
+        // 天安门 GCJ-02 取高德地标示例：https://lbs.amap.com/api/webservice/guide/api/georegeo/
+        // 望京点使用坐标转换接口的请求与响应：https://amap.apifox.cn/api-14671355
+        let points = [
+            ("北京天安门", 39.907321, 116.391232, 39.908722, 116.397499),
+            ("上海外滩", 31.243672, 121.485834, 31.241701, 121.490317),
+            ("北京望京", 39.990475, 116.481499, 39.991754014757, 116.487585177952),
+        ]
+        for (name, gpsLat, gpsLon, mapLat, mapLon) in points {
+            let gps = try XCTUnwrap(WGS84Coordinate(latitude: gpsLat, longitude: gpsLon), name)
+            let map = CLLocationCoordinate2D(latitude: mapLat, longitude: mapLon)
+            let forward = ChinaCoordinate.gpsToMap(gps)
+            let inverse = try XCTUnwrap(ChinaCoordinate.mapToGPS(map), name)
+            XCTAssertLessThanOrEqual(CLLocation(latitude: forward.latitude, longitude: forward.longitude)
+                .distance(from: CLLocation(latitude: mapLat, longitude: mapLon)), 5, "\(name) WGS-84 → GCJ-02")
+            XCTAssertLessThanOrEqual(CLLocation(latitude: inverse.latitude, longitude: inverse.longitude)
+                .distance(from: CLLocation(latitude: gpsLat, longitude: gpsLon)), 5, "\(name) GCJ-02 → WGS-84")
+        }
+    }
+
     func testMainlandCityRoundTripsStayWithinOneCentimetre() throws {
         let cities = [
             ("北京", 39.9042, 116.4074), ("上海", 31.2304, 121.4737), ("成都", 30.5728, 104.0668),

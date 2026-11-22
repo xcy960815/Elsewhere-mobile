@@ -30,7 +30,163 @@ final class AppFlowAndIntentsTests: XCTestCase {
         XCTAssertTrue(store.canOperate)
         XCTAssertEqual(store.devices.count, 1)
         XCTAssertEqual(store.exit?.ip, "203.0.113.24")
-        XCTAssertEqual(store.exit?.city, "东京")
+        XCTAssertEqual(store.exit?.city, String(localized: "东京"))
+    }
+
+    @MainActor
+    func testColdFollowSamplesBeforeTheFirstProbeTunnel() async throws {
+        let demo = AppEnvironment.demo(), io = CommandIO([#"{"ip":"192.0.2.8","city":"Tokyo","loc":"35,139"}"#])
+        let tunnel = TunnelCoordinator(adapter: CommandTunnel(io: io))
+        let env = AppEnvironment(engine: demo.engine, pairingStore: demo.pairingStore, tunnel: tunnel,
+            stateStore: demo.stateStore, exitService: ExitIPService(transport: io), notifier: demo.notifier)
+        try await env.stateStore.saveSettings(AppSettings(channelMode: .builtInTunnel))
+        let store = AppStore(environment: env)
+        let entered = XCTestExpectation(description: "快捷指令正在采样出口")
+        let release = await io.pause(.exitLookup, entered: entered)
+        let intent = Task { try await IntentExecutor.followExit.run(in: store) }
+        _ = await XCTWaiter.fulfillment(of: [entered], timeout: 3)
+        let probe = Task { await store.refreshDevices() }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while store.busyMessage == nil, ContinuousClock.now < deadline { await Task.yield() }
+        let beforeSample = await io.events
+        XCTAssertEqual(beforeSample, [.exitLookup])
+        release.finish()
+        _ = try await intent.value
+        await probe.value
+        let events = await io.events
+        XCTAssertEqual(events, [.exitLookup, .tunnelStart, .tunnelStop, .tunnelStart, .tunnelStop])
+        XCTAssertEqual(store.selectedRecord?.exitIP, "192.0.2.8")
+    }
+
+    @MainActor
+    func testColdSplashDismissalPreservesExistingSettings() async throws {
+        let demo = AppEnvironment.demo()
+        var saved = AppSettings(exitFeaturesEnabled: false, channelMode: .builtInTunnel, customProxyText: "localhost:9000")
+        try await demo.stateStore.saveSettings(saved)
+        let store = AppStore(environment: demo)
+        await store.markSplashSeen()
+        XCTAssertTrue(store.settings.hasSeenSplash)
+        saved.hasSeenSplash = true
+        let persisted = try await demo.stateStore.load()
+        XCTAssertEqual(persisted.settings, saved)
+    }
+
+    @MainActor
+    func testDemoLeavesSharedInboxItemsForDeviceMode() async throws {
+        let inbox = PairingInbox(directory: try makeTemporaryDirectory())
+        let id = try inbox.enqueue(data: LockdownPlist().data(), suggestedName: "shared.plist")
+        let store = AppStore(environment: .demo())
+        let results = await store.importPendingPairings(from: inbox)
+        XCTAssertTrue(results.isEmpty)
+        XCTAssertTrue(store.pairingRecords.isEmpty)
+        XCTAssertEqual(inbox.pendingItems().map(\.id), [id])
+    }
+
+    @MainActor
+    func testDeviceModeAcknowledgesOnlySuccessfulInboxItemsAndProbesImportedDevice() async throws {
+        let inbox = PairingInbox(directory: try makeTemporaryDirectory()), demo = AppEnvironment.demo()
+        let phone = DemoLocationEngine.defaultDevice
+        _ = try inbox.enqueue(data: LockdownPlist(udid: phone.id.rawValue).data(), suggestedName: "valid.plist")
+        let invalid = try inbox.enqueue(data: Data("invalid".utf8), suggestedName: "invalid.plist")
+        let env = AppEnvironment(engine: CommandIO([]), pairingStore: demo.pairingStore, tunnel: demo.tunnelCoordinator,
+            stateStore: demo.stateStore, exitService: demo.exitService, notifier: demo.notifier)
+        let store = AppStore(environment: env)
+        let report = await store.importPendingPairings(from: inbox)
+        XCTAssertEqual(report.count, 2)
+        XCTAssertEqual(inbox.pendingItems().map(\.id), [invalid])
+        XCTAssertEqual(store.readyDevices, [phone])
+        XCTAssertFalse(store.needsOnboarding)
+    }
+
+    @MainActor
+    func testExpiredNotificationIDReportsFailureWithoutApplying() async throws {
+        let env = AppEnvironment.demo(), store = AppStore(environment: env)
+        let exit = try await env.exitService.lookup()
+        let event = PendingExitEvent(id: UUID(), exit: exit, targetDeviceIDs: [env.demoDeviceID], createdAt: Date(timeIntervalSinceNow: -61))
+        try await env.stateStore.savePendingExitEvent(event)
+        let reported = XCTestExpectation(description: "过期通知可见反馈")
+        withObservationTracking { _ = store.feedback } onChange: { reported.fulfill() }
+        env.notifier.handleResponse(category: Notifier.exitChangedCategory, action: Notifier.followAction, eventID: event.id)
+        let result = await XCTWaiter.fulfillment(of: [reported], timeout: 3)
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(store.feedback?.title, String(localized: "这次出口变化已过期，请刷新出口后再跟随。"))
+        XCTAssertTrue(store.records.isEmpty)
+        XCTAssertTrue(store.devices.isEmpty)
+    }
+
+    @MainActor
+    func testNotificationUsesItsTargetsAcrossAColdStartAndRejectsAReplacedID() async throws {
+        let demo = AppEnvironment.demo(), phone = DemoLocationEngine.defaultDevice
+        let tablet = TargetDevice(id: DeviceID(rawValue: "tablet")!, name: "iPad", deviceClass: "iPad", productType: nil,
+            osVersion: nil, endpointHost: "fd00::1", paired: true, developerMode: true, wifiEnabled: true,
+            timeZoneID: nil, cellular: false, ddiMounted: true)
+        let io = CommandIO([], devices: [phone, tablet])
+        let env = AppEnvironment(engine: io, pairingStore: demo.pairingStore, tunnel: demo.tunnelCoordinator,
+            stateStore: demo.stateStore, exitService: demo.exitService, notifier: demo.notifier)
+        let store = AppStore(environment: env)
+        for target in [phone, tablet] {
+            _ = try await env.pairingStore.importPairing(data: LockdownPlist(udid: target.id.rawValue).data(),
+                endpointHost: target.endpointHost, deviceName: target.name)
+        }
+        try await env.stateStore.saveSettings(AppSettings(applyToAll: true))
+        try await env.stateStore.saveSelectedDeviceID(phone.id)
+        let exit = try await env.exitService.lookup()
+        let event = PendingExitEvent(id: UUID(), exit: exit, targetDeviceIDs: [tablet.id], createdAt: Date())
+        try await env.stateStore.saveExitBaseline(ExitBaseline(proxyKey: "", lastConfirmedIP: exit.ip, lastExit: exit, lastFetchedAt: Date()))
+        try await env.stateStore.savePendingExitEvent(event)
+        let stale = XCTestExpectation(description: "旧通知不可跟随")
+        withObservationTracking { _ = store.feedback } onChange: { stale.fulfill() }
+        env.notifier.handleResponse(category: Notifier.exitChangedCategory, action: Notifier.followAction, eventID: UUID())
+        _ = await XCTWaiter.fulfillment(of: [stale], timeout: 3)
+        XCTAssertEqual(store.feedback?.kind, .failure)
+        let retained = await env.exitMonitor.pendingEvent(for: event.id)
+        XCTAssertEqual(retained, event)
+
+        let finished = XCTestExpectation(description: "只跟随事件中的设备")
+        withObservationTracking { _ = store.feedback } onChange: { finished.fulfill() }
+        env.notifier.handleResponse(category: Notifier.exitChangedCategory, action: Notifier.followAction, eventID: event.id)
+        _ = await XCTWaiter.fulfillment(of: [finished], timeout: 3)
+        let events = await io.events, saved = try await env.stateStore.load()
+        XCTAssertEqual(events, [.set(tablet.id)])
+        XCTAssertEqual(Set(saved.records.keys), [tablet.id])
+        XCTAssertNil(saved.pendingExitEvent)
+        XCTAssertNil(store.pendingExitChange)
+
+        try await env.stateStore.savePendingExitEvent(event)
+        await store.loadSettingsOnly()
+        await store.dismissPendingExitChange()
+        let dismissed = await env.exitMonitor.pendingEvent(for: event.id)
+        XCTAssertNil(dismissed)
+        XCTAssertNil(store.pendingExitChange)
+    }
+
+    @MainActor
+    func testDeviceStateTracksDDIAndOperationUntilReceipt() async throws {
+        let demo = AppEnvironment.demo(), io = CommandIO([]), phone = DemoLocationEngine.defaultDevice
+        let env = AppEnvironment(engine: io, pairingStore: demo.pairingStore, tunnel: demo.tunnelCoordinator,
+            stateStore: demo.stateStore, exitService: demo.exitService, notifier: demo.notifier)
+        let store = AppStore(environment: env)
+        _ = try await store.importPairing(data: LockdownPlist(udid: phone.id.rawValue).data(), endpointHost: phone.endpointHost, deviceName: nil)
+        await store.refreshDevices()
+        let mounting = XCTestExpectation(description: "挂载中"), writing = XCTestExpectation(description: "下发中")
+        let mount = await io.pause(.mounting(phone.id), entered: mounting)
+        let write = await io.pause(.set(phone.id), entered: writing)
+        let operation = Task { await store.apply(place: Place.defaults[0], source: .city) }
+        _ = await XCTWaiter.fulfillment(of: [mounting], timeout: 3)
+        await waitForState(.preparingDDI(phone, .mounting), id: phone.id, in: store)
+        mount.finish()
+        _ = await XCTWaiter.fulfillment(of: [writing], timeout: 3)
+        await waitForState(.operating(phone, .setLocation), id: phone.id, in: store)
+        write.finish()
+        await operation.value
+        XCTAssertEqual(store.deviceStates[phone.id], .ready(phone))
+    }
+
+    @MainActor
+    private func waitForState(_ state: DeviceConnectionState, id: DeviceID, in store: AppStore) async {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while store.deviceStates[id] != state, ContinuousClock.now < deadline { await Task.yield() }
+        XCTAssertEqual(store.deviceStates[id], state)
     }
 
     @MainActor

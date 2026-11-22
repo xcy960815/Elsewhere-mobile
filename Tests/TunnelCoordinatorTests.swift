@@ -167,6 +167,45 @@ final class TunnelCoordinatorTests: XCTestCase {
         XCTAssertEqual(events, [.status, .start(peer), .stop(cancelled: false), .status, .start(peer)])
     }
 
+    func testSwitchingPeersReleasesEvenAKeptTunnel() async throws {
+        let adapter = MockTunnelProviderAdapter(), coordinator = TunnelCoordinator(adapter: adapter)
+        try await coordinator.withChannel(mode: .builtInTunnel, targetHost: "10.7.0.1", autoDisconnect: false) {}
+        try await coordinator.withChannel(mode: .builtInTunnel, targetHost: "fd00::1", autoDisconnect: true) {}
+        let events = await adapter.events
+        XCTAssertEqual(events, [.status, .start("10.7.0.1"), .stop(cancelled: false),
+                                .status, .start("fd00::1"), .stop(cancelled: false)])
+    }
+
+    func testCancellingPeerWaitBeforeOldChannelFinishesStopping() async throws {
+        let stopping = expectation(description: "正为新 peer 释放旧通道")
+        let (gate, release) = AsyncStream<Void>.makeStream()
+        let adapter = MockTunnelProviderAdapter(onStop: {
+            stopping.fulfill()
+            for await _ in gate {}
+        })
+        let coordinator = TunnelCoordinator(adapter: adapter)
+        try await coordinator.withChannel(mode: .builtInTunnel, targetHost: "10.7.0.1", autoDisconnect: false) {}
+        let cancelled = expectation(description: "取消不依赖旧通道断开")
+        let next = Task {
+            do {
+                try await coordinator.withChannel(mode: .builtInTunnel, targetHost: "fd00::1", autoDisconnect: true) {
+                    XCTFail("取消的请求不应执行")
+                }
+                XCTFail("应报告取消")
+            } catch is CancellationError { cancelled.fulfill() }
+        }
+        defer { release.finish() }
+        await fulfillment(of: [stopping], timeout: 3)
+        next.cancel()
+        await fulfillment(of: [cancelled], timeout: 3)
+        release.finish()
+        try await next.value
+        await coordinator.disconnectOwnedTunnelIfIdle()
+        let events = await adapter.events, leases = await coordinator.activeLeases
+        XCTAssertEqual(events, [.status, .start("10.7.0.1"), .stop(cancelled: false)])
+        XCTAssertEqual(leases, 0)
+    }
+
     func testFailedStartReleasesReservationWithoutRunningOperation() async throws {
         let adapter = MockTunnelProviderAdapter(onStart: { throw URLError(.timedOut) })
         let coordinator = TunnelCoordinator(adapter: adapter)
