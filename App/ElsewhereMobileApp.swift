@@ -70,13 +70,12 @@ struct ElsewhereMobileApp: App {
 }
 
 private enum Page: String, CaseIterable {
-    case location = "定位", map = "地图", cities = "城市", settings = "设置"
+    case location = "定位", map = "地图", settings = "设置"
 
     @MainActor var label: some View {
         let symbol = switch self {
         case .location: "location"
         case .map: "map"
-        case .cities: "building.2"
         case .settings: "gearshape"
         }
         return Label(LocalizedStringKey(rawValue), systemImage: symbol)
@@ -89,7 +88,7 @@ private struct MobileNavigation: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.scenePhase) private var scenePhase
     @State private var selection = Page.location
-    @State private var showingSplash: Bool?
+    @State private var showingSplash = !AppEnvironment.modePreferences.bool(forKey: "ElsewhereHasSeenSplash")
     @AppStorage("ElsewhereHasSeenSplash", store: AppEnvironment.modePreferences) private var hasSeenSplash = false
     @State private var showingOnboarding = false
     @State private var activeLoadFinished = false
@@ -98,9 +97,9 @@ private struct MobileNavigation: View {
     var body: some View {
         ZStack {
             navigation
-                .accessibilityHidden(showingSplash != false)
-                .allowsHitTesting(showingSplash == false)
-            if showingSplash == true {
+                .accessibilityHidden(showingSplash)
+                .allowsHitTesting(!showingSplash)
+            if showingSplash {
                 SplashView {
                     Task {
                         await store.markSplashSeen()
@@ -108,22 +107,19 @@ private struct MobileNavigation: View {
                         showingSplash = false
                     }
                 }
-            } else if showingSplash == nil {
-                Color(uiColor: .systemBackground).ignoresSafeArea().overlay { ProgressView() }
             }
         }
         .task {
-            if hasSeenSplash { showingSplash = false }
-            else { showingSplash = (try? await store.environment.stateStore.load().settings.hasSeenSplash) != true }
+            if !hasSeenSplash { showingSplash = (try? await store.environment.stateStore.load().settings.hasSeenSplash) != true }
         }
         .safeAreaInset(edge: .top) { if !showingOnboarding { importSummary } }
         .sheet(isPresented: $showingOnboarding) {
             OnboardingView().safeAreaInset(edge: .top) { importSummary }
         }
-        .onChange(of: activeLoadFinished && showingSplash == false && scenePhase == .active && store.needsOnboarding) { _, needed in
+        .onChange(of: activeLoadFinished && !showingSplash && scenePhase == .active && store.needsOnboarding) { _, needed in
             if needed { showingOnboarding = true }
         }
-        .onChange(of: showingSplash == false && scenePhase == .active, initial: true) { _, ready in
+        .onChange(of: !showingSplash && scenePhase == .active, initial: true) { _, ready in
             guard ready else { return }
             Task {
                 await store.handleSceneActive()
@@ -201,9 +197,8 @@ private struct MobileNavigation: View {
 
     @ViewBuilder private func content(_ page: Page) -> some View {
         switch page {
-        case .location: LocationView(openCities: { selection = .cities }, openOnboarding: { showingOnboarding = true })
+        case .location: LocationView(openMap: { selection = .map }, openOnboarding: { showingOnboarding = true })
         case .map: MapView(openOnboarding: { showingOnboarding = true })
-        case .cities: CitiesView(openMap: { selection = .map }, openOnboarding: { showingOnboarding = true })
         case .settings: SettingsView(openOnboarding: { showingOnboarding = true }, replaySplash: { showingSplash = true })
         }
     }

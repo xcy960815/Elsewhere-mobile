@@ -55,7 +55,7 @@ struct CitiesView: View {
 
     private func cityRow(_ place: Place) -> some View {
         Button {
-            Task { await store.apply(place: place, source: .city) }
+            Task { await store.applyOrQueue(place: place, source: .city) }
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 Text(place.displayName).foregroundStyle(.primary)
@@ -64,7 +64,7 @@ struct CitiesView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .disabled(!store.canOperate)
+        .disabled(!store.canSelectTarget)
         .accessibilityHint("将目标设备的定位设到此处")
     }
 }

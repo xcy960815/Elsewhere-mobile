@@ -42,17 +42,184 @@ private struct PinnedMirrorDownloader: DDIDownloader {
     }
 }
 
+func writeRelease(to directory: URL, byte: UInt8 = 0x78) throws -> String {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let image = Data(repeating: byte, count: 131_075)
+    let digest = Data(SHA384.hash(data: image))
+    let trustCache = Data("test trust cache".utf8)
+    let manifest = ["BuildIdentities": [["Manifest": ["PersonalizedDMG": ["Digest": digest],
+                                                   "LoadableTrustCache": ["Digest": Data(SHA384.hash(data: trustCache))]]]]]
+    try PropertyListSerialization.data(fromPropertyList: manifest, format: .xml, options: 0)
+        .write(to: directory.appending(path: "BuildManifest.plist"))
+    try image.write(to: directory.appending(path: "Image.dmg"))
+    try trustCache.write(to: directory.appending(path: "Image.dmg.trustcache"))
+    return digest.map { String(format: "%02x", $0) }.joined()
+}
+
 final class DDIRepositoryTests: XCTestCase {
-    private func writeRelease(to directory: URL, byte: UInt8 = 0x78) throws -> String {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let image = Data(repeating: byte, count: 131_075)
-        let digest = Data(SHA384.hash(data: image))
-        let manifest = ["BuildIdentities": [["Manifest": ["PersonalizedDMG": ["Digest": digest]]]]]
-        try PropertyListSerialization.data(fromPropertyList: manifest, format: .xml, options: 0)
-            .write(to: directory.appending(path: "BuildManifest.plist"))
-        try image.write(to: directory.appending(path: "Image.dmg"))
-        try Data("test trust cache".utf8).write(to: directory.appending(path: "Image.dmg.trustcache"))
-        return digest.map { String(format: "%02x", $0) }.joined()
+    func testPrepareCachePublishesStatusAndSurvivesLeaseReleaseUntilCleared() async throws {
+        let directory = try makeTemporaryDirectory(), mirror = directory.appending(path: "mirror")
+        let digest = try writeRelease(to: mirror)
+        let total = try DDIRepository.requiredFiles.reduce(Int64(0)) { $0 + Int64(try Data(contentsOf: mirror.appending(path: $1)).count) }
+        let downloader = LocalDDIDownloader()
+        let repository = DDIRepository(baseDirectory: directory, mirrorBaseURL: mirror, downloader: downloader,
+                                       verifier: RustLocationEngine.makeDDIVerifier())
+        let initial = await repository.cacheStatus()
+        XCTAssertEqual(initial, .notDownloaded)
+        let prepared = try await repository.prepareCache(forceRefresh: true)
+        let cached = await repository.cachedDirectory(), status = await repository.cacheStatus()
+        let release = try XCTUnwrap(cached)
+        XCTAssertEqual(prepared, .ready(versionID: release.lastPathComponent, totalBytes: total))
+        XCTAssertEqual(status, prepared)
+        XCTAssertEqual(try RustCoreBridge.verifyDDI(at: release), digest)
+        let files = await downloader.files
+        XCTAssertEqual(files, DDIRepository.requiredFiles)
+        try await repository.clearCache()
+        let cleared = await repository.cacheStatus()
+        XCTAssertEqual(cleared, .notDownloaded)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: release.path))
+    }
+
+    func testClearCacheCancelsInFlightPreparationAndPreventsPublication() async throws {
+        let directory = try makeTemporaryDirectory(), mirror = directory.appending(path: "mirror")
+        _ = try writeRelease(to: mirror)
+        let downloader = LocalDDIDownloader()
+        let repository = DDIRepository(baseDirectory: directory, mirrorBaseURL: mirror, downloader: downloader,
+                                       verifier: RustLocationEngine.makeDDIVerifier())
+        let downloading = expectation(description: "下载已暂停"), joined = expectation(description: "缓存准备已加入下载")
+        let returned = expectation(description: "清理缓存取消所有等待者")
+        returned.expectedFulfillmentCount = 2
+        let resume = await downloader.pauseNextDownload { downloading.fulfill() }
+        let acquisition = Task {
+            defer { returned.fulfill() }
+            do throws(DDIRepositoryError) {
+                let lease = try await repository.acquirePrepared()
+                await repository.release(lease)
+                XCTFail("清理缓存后不应取得租约")
+            } catch { XCTAssertEqual(error, .cancelled) }
+        }
+        await fulfillment(of: [downloading], timeout: 5)
+        let preparation = Task {
+            defer { returned.fulfill() }
+            do throws(DDIRepositoryError) {
+                _ = try await repository.prepareCache(onStage: { stage in
+                    if stage == EngineOperationStage.downloadingDDI.rawValue { joined.fulfill() }
+                })
+                XCTFail("清理缓存后不应完成准备")
+            } catch { XCTAssertEqual(error, .cancelled) }
+        }
+        await fulfillment(of: [joined], timeout: 5)
+        let staging = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .first { $0.lastPathComponent.hasPrefix("staging-") })
+        try await repository.clearCache()
+        await fulfillment(of: [returned], timeout: 5)
+        resume.finish()
+        await acquisition.value
+        await preparation.value
+        let deadline = ContinuousClock.now + .seconds(5)
+        while FileManager.default.fileExists(atPath: staging.path), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+        let status = await repository.cacheStatus(), cached = await repository.cachedDirectory()
+        XCTAssertEqual(status, .notDownloaded)
+        XCTAssertNil(cached)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appending(path: "current.txt").path))
+    }
+
+    func testMalformedOrMismatchedTrustcachePreservesPublishedCache() async throws {
+        let directory = try makeTemporaryDirectory(), mirror = directory.appending(path: "mirror")
+        let digest = try writeRelease(to: mirror)
+        let repository = DDIRepository(baseDirectory: directory, downloader: LocalDDIDownloader(), verifier: RustLocationEngine.makeDDIVerifier())
+        let published = try await repository.importLocalFiles(from: [mirror])
+        let pointer = directory.appending(path: "current.txt"), version = try Data(contentsOf: pointer)
+        let cached = await repository.cachedDirectory(), release = try XCTUnwrap(cached)
+        let originals = try DDIRepository.requiredFiles.map { try Data(contentsOf: release.appending(path: $0)) }
+        for (trustCache, reason) in [(Data([0x01]), String(localized: "开发者组件 trust cache 无效")),
+                                     (Data(repeating: 0x01, count: 16), String(localized: "开发者组件 trust cache 摘要不匹配"))] {
+            try trustCache.write(to: mirror.appending(path: "Image.dmg.trustcache"))
+            do {
+                _ = try await repository.importLocalFiles(from: [mirror])
+                XCTFail("无效 trust cache 不应替换缓存")
+            } catch { XCTAssertEqual(error, .verificationFailed(reason)) }
+            let status = await repository.cacheStatus(), current = await repository.cachedDirectory()
+            XCTAssertEqual(status, published)
+            XCTAssertEqual(current, release)
+            XCTAssertEqual(try Data(contentsOf: pointer), version)
+            XCTAssertEqual(try RustCoreBridge.verifyDDI(at: release), digest)
+            XCTAssertEqual(try DDIRepository.requiredFiles.map { try Data(contentsOf: release.appending(path: $0)) }, originals)
+        }
+    }
+
+    func testWithCachedDDINeverDownloadsAndProtectsDirectoryUntilOperationReturns() async throws {
+        let directory = try makeTemporaryDirectory(), mirror = directory.appending(path: "mirror")
+        let digest = try writeRelease(to: mirror), downloader = LocalDDIDownloader()
+        let repository = DDIRepository(baseDirectory: directory, mirrorBaseURL: mirror, downloader: downloader,
+                                       verifier: RustLocationEngine.makeDDIVerifier())
+        let missing = try await repository.withCachedDDI { directory in
+            XCTFail("无缓存时不应执行操作")
+            return directory
+        }
+        XCTAssertNil(missing)
+        let before = await downloader.files
+        XCTAssertTrue(before.isEmpty)
+        _ = try await repository.prepareCache()
+        let downloaded = await downloader.files
+        let used = try await repository.withCachedDDI { directory in
+            try await repository.clearCache()
+            XCTAssertEqual(try RustCoreBridge.verifyDDI(at: directory), digest)
+            return directory
+        }
+        let release = try XCTUnwrap(used)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: release.path))
+        let after = await downloader.files
+        XCTAssertEqual(after, downloaded)
+    }
+
+    func testImportLocalFilesAcceptsIndividualFilesAndDirectory() async throws {
+        let directory = try makeTemporaryDirectory(), mirror = directory.appending(path: "mirror")
+        let digest = try writeRelease(to: mirror), downloader = LocalDDIDownloader()
+        let total = try DDIRepository.requiredFiles.reduce(Int64(0)) { $0 + Int64(try Data(contentsOf: mirror.appending(path: $1)).count) }
+        let repository = DDIRepository(baseDirectory: directory, downloader: downloader, verifier: RustLocationEngine.makeDDIVerifier())
+        for urls in [DDIRepository.requiredFiles.map { mirror.appending(path: $0) }, [mirror]] {
+            let imported = try await repository.importLocalFiles(from: urls)
+            let cached = await repository.cachedDirectory(), status = await repository.cacheStatus()
+            let release = try XCTUnwrap(cached)
+            XCTAssertEqual(imported, .ready(versionID: release.lastPathComponent, totalBytes: total))
+            XCTAssertEqual(status, imported)
+            XCTAssertEqual(try RustCoreBridge.verifyDDI(at: release), digest)
+        }
+        let files = await downloader.files
+        XCTAssertTrue(files.isEmpty)
+    }
+
+    func testInvalidLocalImportsPreservePublishedCache() async throws {
+        let directory = try makeTemporaryDirectory(), mirror = directory.appending(path: "mirror")
+        let digest = try writeRelease(to: mirror)
+        let repository = DDIRepository(baseDirectory: directory, downloader: LocalDDIDownloader(), verifier: RustLocationEngine.makeDDIVerifier())
+        let published = try await repository.importLocalFiles(from: [mirror])
+        let pointer = directory.appending(path: "current.txt"), version = try Data(contentsOf: pointer)
+        for missing in [nil] + DDIRepository.requiredFiles.map(Optional.some) {
+            let file = mirror.appending(path: missing ?? "Image.dmg"), original = try Data(contentsOf: file)
+            if missing != nil {
+                try FileManager.default.removeItem(at: file)
+            } else {
+                var changed = original
+                changed[changed.count - 1] ^= 1
+                try changed.write(to: file)
+            }
+            do {
+                _ = try await repository.importLocalFiles(from: [mirror])
+                XCTFail("缺件或摘要损坏时不应替换缓存")
+            } catch {
+                guard case .verificationFailed = error else { return XCTFail("应报告组件校验失败：\(error)") }
+            }
+            let status = await repository.cacheStatus(), cached = await repository.cachedDirectory()
+            XCTAssertEqual(status, published)
+            XCTAssertEqual(try Data(contentsOf: pointer), version)
+            XCTAssertEqual(try RustCoreBridge.verifyDDI(at: XCTUnwrap(cached)), digest)
+            try original.write(to: file)
+        }
     }
 
     func testFourConcurrentAcquisitionsDownloadEachFileOnce() async throws {

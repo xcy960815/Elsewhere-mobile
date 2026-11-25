@@ -1,3 +1,4 @@
+import CoreLocation
 import Darwin
 import Foundation
 import Network
@@ -55,35 +56,86 @@ struct ExitIPService: Sendable {
         self.now = now
     }
 
+    private struct CityExit: Decodable {
+        let ip: String
+        let location: [String]
+    }
+
+    private enum ProviderResponse {
+        case ipInfo(Data)
+        case city(CityExit)
+    }
+
+    private func ipInfo(_ path: String, proxy: ExitProxyAddress?) async throws -> ProviderResponse {
+        do {
+            do {
+                return .ipInfo(try await fetch("https://ipinfo.io/" + path, proxy: proxy))
+            } catch let error as URLError where error.code == .secureConnectionFailed {
+                // Some networks close TLS connections to IPinfo. Keep the same egress for the retry.
+                let data = try await fetch("https://myip.ipip.net/json", proxy: proxy)
+                struct Response: Decodable { let ret: String; let data: CityExit }
+                guard let reply = try? JSONDecoder().decode(Response.self, from: data), reply.ret == "ok",
+                      canonicalIP(reply.data.ip) != nil else {
+                    throw ExitIPError.badResponse(String(decoding: data.prefix(300), as: UTF8.self))
+                }
+                return .city(reply.data)
+            }
+        } catch let error as URLError {
+            guard let proxy, error.code != .cancelled else { throw error }
+            throw ExitIPError.proxy(proxy.display, error.localizedDescription)
+        }
+    }
+
     func lookup(proxy: ExitProxyAddress? = nil) async throws -> ExitInfo {
         struct Response: Decodable {
             let ip, loc: String
             let city, region, country, org: String?
         }
-        let data = try await fetch("https://ipinfo.io/json", proxy: proxy)
-        guard let raw = try? JSONDecoder().decode(Response.self, from: data),
-              let ip = canonicalIP(raw.ip),
-              case .success(let coordinate) = CoordinateParser.parse(raw.loc) else {
-            throw ExitIPError.badResponse(String(decoding: data.prefix(300), as: UTF8.self))
+        switch try await ipInfo("json", proxy: proxy) {
+        case .ipInfo(let data):
+            guard let raw = try? JSONDecoder().decode(Response.self, from: data),
+                  let ip = canonicalIP(raw.ip),
+                  case .success(let coordinate) = CoordinateParser.parse(raw.loc) else {
+                throw ExitIPError.badResponse(String(decoding: data.prefix(300), as: UTF8.self))
+            }
+            return ExitInfo(ip: ip, city: raw.city ?? "", region: raw.region ?? "", country: raw.country ?? "",
+                            coordinate: coordinate, org: raw.org, sampledAt: now())
+        case .city(let raw):
+            let parts = raw.location.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            guard parts.count >= 3, !parts[0].isEmpty, !parts[2].isEmpty, let ip = canonicalIP(raw.ip) else {
+                throw ExitIPError.badResponse(String(localized: "备用出口服务未提供城市，无法确定坐标。"))
+            }
+            let address = parts.prefix(3).filter { !$0.isEmpty }.joined(separator: " ")
+            let matches = try await CLGeocoder().geocodeAddressString(address, in: nil, preferredLocale: Locale(identifier: "zh_CN"))
+            try Task.checkCancellation()
+            guard let match = matches.first, match.locality != nil, let point = match.location?.coordinate,
+                  let coordinate = WGS84Coordinate(latitude: point.latitude, longitude: point.longitude) else {
+                throw ExitIPError.badResponse(String(localized: "无法解析出口城市坐标。"))
+            }
+            return ExitInfo(ip: ip, city: parts[2], region: parts[1], country: match.isoCountryCode ?? parts[0],
+                            coordinate: coordinate, org: parts.count > 4 ? parts[4] : nil, sampledAt: now())
         }
-        return ExitInfo(ip: ip, city: raw.city ?? "", region: raw.region ?? "", country: raw.country ?? "",
-                        coordinate: coordinate, org: raw.org, sampledAt: now())
     }
 
     func currentIP(proxy: ExitProxyAddress? = nil) async throws -> String {
         do {
-            return try await ip(from: "https://api.ipify.org", proxy: proxy)
+            let first = try await fetch("https://api.ipify.org", proxy: proxy)
+            return try parsePlainIP(first)
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as URLError where error.code == .cancelled {
             throw error
         } catch {
-            return try await ip(from: "https://ipinfo.io/ip", proxy: proxy)
+            switch try await ipInfo("ip", proxy: proxy) {
+            case .ipInfo(let body): return try parsePlainIP(body)
+            case .city(let raw):
+                guard let ip = canonicalIP(raw.ip) else { throw ExitIPError.badResponse(raw.ip) }
+                return ip
+            }
         }
     }
 
-    private func ip(from url: String, proxy: ExitProxyAddress?) async throws -> String {
-        let data = try await fetch(url, proxy: proxy)
+    private func parsePlainIP(_ data: Data) throws -> String {
         guard let ip = canonicalIP(String(decoding: data, as: UTF8.self)) else {
             throw ExitIPError.badResponse(String(decoding: data.prefix(300), as: UTF8.self))
         }
@@ -110,13 +162,7 @@ struct ExitIPService: Sendable {
 
     private func fetch(_ url: String, proxy: ExitProxyAddress?) async throws -> Data {
         try Task.checkCancellation()
-        let (data, response): (Data, HTTPURLResponse)
-        do {
-            (data, response) = try await transport.data(for: URLRequest(url: URL(string: url)!), proxy: proxy)
-        } catch {
-            guard let proxy, !(error is CancellationError), (error as? URLError)?.code != .cancelled else { throw error }
-            throw ExitIPError.proxy(proxy.display, error.localizedDescription)
-        }
+        let (data, response) = try await transport.data(for: URLRequest(url: URL(string: url)!), proxy: proxy)
         try Task.checkCancellation()
         guard response.statusCode == 200 else {
             throw ExitIPError.http(response.statusCode, String(decoding: data.prefix(300), as: UTF8.self))

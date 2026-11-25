@@ -111,6 +111,23 @@ final class CoreServicesTests: XCTestCase {
         XCTAssertEqual(calls.map(\.proxy), [proxy, proxy])
     }
 
+    func testTLSFallbackChecksReportedIPAndRetainsProxy() async throws {
+        let proxy = try XCTUnwrap(ExitProxyAddress("localhost:8123"))
+        let reply = #"{"ret":"ok","data":{"ip":"2001:db8::1","location":["","",""]}}"#
+        let transport = StubHTTPTransport(.failure(.timedOut), .failure(.secureConnectionFailed), .http(200, reply))
+        let service = ExitIPService(transport: transport)
+        let ip = try await service.currentIP(proxy: proxy)
+        XCTAssertEqual(ip, "2001:db8::1")
+        let calls = await transport.calls
+        XCTAssertEqual(calls.last?.request.url?.host, "myip.ipip.net")
+        XCTAssertEqual(calls.map(\.proxy), [proxy, proxy, proxy])
+        let cityMissing = StubHTTPTransport(.failure(.secureConnectionFailed), .http(200, reply))
+        do {
+            _ = try await ExitIPService(transport: cityMissing).lookup()
+            XCTFail("Missing city should not produce a coordinate")
+        } catch ExitIPError.badResponse { }
+    }
+
     func testIPv6ProbeAndDetailUseTheSameCanonicalForm() async throws {
         let transport = StubHTTPTransport(.http(200, "2001:0DB8:0:0:0:0:0000:0005"),
                                          .http(200, #"{"ip":"2001:db8::5","loc":"0,0"}"#))

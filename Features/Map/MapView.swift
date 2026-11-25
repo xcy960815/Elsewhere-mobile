@@ -134,11 +134,23 @@ struct MapView: View {
             }
             .padding(.leading, 12)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-            Picker("底图样式", selection: $look) {
-                ForEach(MapLook.allCases, id: \.self) { Text(LocalizedStringKey($0.rawValue)).tag($0) }
+            HStack {
+                if let gps = store.selectedRecord?.coordinate ?? store.exit?.coordinate {
+                    Button { jump(to: ChinaCoordinate.gpsToMap(gps)) } label: {
+                        Label("居中位置", systemImage: "scope").labelStyle(.iconOnly)
+                            .frame(width: 44, height: 44).background(.regularMaterial, in: Circle())
+                    }
+                }
+                Menu {
+                    Picker("底图样式", selection: $look) {
+                        ForEach(MapLook.allCases, id: \.self) { Text(LocalizedStringKey($0.rawValue)).tag($0) }
+                    }
+                } label: {
+                    Label("底图样式", systemImage: "square.3.layers.3d").labelStyle(.iconOnly)
+                        .frame(width: 44, height: 44).background(.regularMaterial, in: Circle())
+                }
             }
-            .pickerStyle(.segmented)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .frame(maxWidth: .infinity, alignment: .trailing)
             if search.hasSuggestions || search.appleError != nil || search.photonError != nil || search.nominatimError != nil || notFound {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
@@ -230,6 +242,13 @@ struct MapView: View {
                 .simultaneousGesture(DragGesture().onEnded { drag in
                     withAnimation { expanded = drag.translation.height < 0 }
                 })
+                if let pending = store.pendingAction {
+                    HStack {
+                        Text("待应用 · \(pending.displayTitle)").font(.caption).frame(maxWidth: .infinity, alignment: .leading)
+                        Button("立即应用") { Task { await store.executePendingAction(probeFirst: true) } }.disabled(store.busyMessage != nil)
+                        Button("取消", action: store.cancelPendingAction)
+                    }
+                }
                 if store.needsPairingSetup {
                     Text("尚未配置设备，暂时无法应用所选位置。")
                         .font(.subheadline).foregroundStyle(.secondary)
@@ -255,36 +274,34 @@ struct MapView: View {
                             Button("应用到设备") {
                                 let name = displayName, previous = store.feedback?.id
                                 Task {
-                                    await store.apply(name: name, coordinate: pin.gps, source: .custom)
-                                    if self.pin?.id == pin.id, let result = store.feedback, result.id != previous, result.kind == .success {
+                                    await store.applyOrQueue(name: name, coordinate: pin.gps, source: .custom)
+                                    guard self.pin?.id == pin.id else { return }
+                                    if store.pendingAction != nil { self.pin = nil }
+                                    else if let result = store.feedback, result.id != previous, result.kind == .success {
                                         self.pin = nil
                                         jump(to: pin.map)
                                     }
                                 }
                             }
-                            .buttonStyle(.borderedProminent).disabled(!store.canOperate)
+                            .buttonStyle(.borderedProminent).disabled(!store.canSelectTarget)
                         }
                     } else if let record = store.selectedRecord {
                         Text("WGS-84 · \(record.coordinate.formatted)").font(.caption.monospacedDigit())
                     }
                     HStack {
                         if store.settings.exitFeaturesEnabled {
-                            Button("跟随出口") {
-                                let previous = store.feedback?.id, selection = pin?.id
-                                Task {
-                                    await store.followExit()
-                                    guard pin?.id == selection, let result = store.feedback, result.id != previous,
-                                          result.kind == .success, let exit = store.exit else { return }
-                                    pin = nil
-                                    jump(to: ChinaCoordinate.gpsToMap(exit.coordinate))
-                                }
-                            }
-                            .disabled(!store.canOperate || store.customProxyInvalid)
+                            Button("跟随出口") { Task { await store.followExitOrQueue() } }
+                                .disabled(!store.canSelectTarget || store.customProxyInvalid)
                         }
-                        Button("恢复真实定位") { Task { await store.clearLocation() } }.disabled(!store.canOperate)
+                        Button("恢复真实定位") { Task { await store.clearLocationOrQueue() } }.disabled(!store.canSelectTarget)
                     }
-                    if let busy = store.busyMessage { ProgressView { Text(busy) }.progressViewStyle(.linear) }
-                    else if let device = store.selectedDevice { Label(device.name, systemImage: "iphone").font(.caption) }
+                    if let message = store.busyMessage {
+                        if let progress = store.ddiProgress {
+                            ProgressView(value: progress) { Text(message).font(.caption) }.progressViewStyle(.linear)
+                        } else {
+                            ProgressView { Text(message).font(.caption) }
+                        }
+                    } else if let device = store.selectedDevice { Label(device.name, systemImage: "iphone").font(.caption) }
                     if let message = store.feedback { FeedbackBanner(message: message, onDismiss: store.dismissFeedback) }
                 }
             }

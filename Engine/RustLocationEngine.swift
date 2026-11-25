@@ -59,6 +59,20 @@ final class RustLocationEngine: LocationEngineProtocol {
     func setLocation(_ coordinate: WGS84Coordinate, on deviceID: DeviceID,
                      onStage: @escaping @Sendable (EngineOperationStage) -> Void) async throws(EngineError) {
         let (record, request) = try await pairedRequest(EwCommandSetLocation, for: deviceID, coordinate: coordinate)
+        do {
+            let applied: Bool? = try await ddiRepository.withCachedDDI { directory in
+                var job = request
+                job.ddiDirectory = directory
+                _ = try await self.handle.submit(job, deviceAlias: record.deviceName, onStage: onStage)
+                return true
+            }
+            if applied == true { return }
+        } catch let error as EngineError {
+            throw error
+        } catch {
+            throw EngineError(code: .cancelled, stage: EngineOperationStage.verifyingDDI.rawValue, deviceAlias: record.deviceName,
+                              message: error.localizedDescription)
+        }
         if try await isDDIMounted(request, deviceAlias: record.deviceName, onStage: onStage) {
             do throws(EngineError) {
                 _ = try await handle.submit(request, deviceAlias: record.deviceName, onStage: onStage)

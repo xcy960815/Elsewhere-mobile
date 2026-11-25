@@ -35,6 +35,10 @@ struct PairingManagementView: View {
                                 .keyboardType(.asciiCapable).textInputAutocapitalization(.never).autocorrectionDisabled()
                                 .textFieldStyle(.roundedBorder)
                             HStack {
+                                Button("本机回环 \(LoopbackTarget.defaultPeer)") { editedHost = LoopbackTarget.defaultPeer }
+                                Button("输入局域网 IP") { editedHost = "" }
+                            }
+                            HStack {
                                 Button("取消") { editing = nil }
                                 Button("保存地址") {
                                     working = true
@@ -56,8 +60,12 @@ struct PairingManagementView: View {
                                 Button("修改地址") { editedHost = record.endpointHost; editing = record.id }
                             }
                         }
-                        Text(store.deviceStates[record.probeID]?.diagnosis ?? String(localized: "尚未测试连接"))
-                            .font(.footnote).foregroundStyle(.secondary)
+                        if let state = store.deviceStates[record.probeID] {
+                            Text(state.diagnosis).font(.footnote)
+                                .foregroundStyle(state.isReady ? Color.green : state.isBusy ? .secondary : .orange)
+                        } else {
+                            Text("尚未测试连接").font(.footnote).foregroundStyle(.secondary)
+                        }
                     }
                     .buttonStyle(.borderless)
                     .swipeActions(allowsFullSwipe: false) {
@@ -71,6 +79,11 @@ struct PairingManagementView: View {
             Section {
                 TextField("目标 IP 地址", text: $host)
                     .keyboardType(.asciiCapable).textInputAutocapitalization(.never).autocorrectionDisabled()
+                HStack {
+                    Button("本机回环 \(LoopbackTarget.defaultPeer)") { host = LoopbackTarget.defaultPeer }
+                    Button("输入局域网 IP") { host = "" }
+                }
+                .buttonStyle(.borderless)
                 Button { importing = true } label: { Label("导入配对文件", systemImage: "doc.badge.plus") }
                     .disabled(LoopbackTarget.addressBytes(host) == nil)
             } header: {

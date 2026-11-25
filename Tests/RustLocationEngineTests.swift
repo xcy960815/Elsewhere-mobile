@@ -79,6 +79,55 @@ final class RustLocationEngineTests: XCTestCase {
         }
     }
 
+    func testSetLocationUsesCachedDDILeaseWithOneConnectionAndNoDownload() async throws {
+        let (socket, host) = try reserveLockdownPort()
+        defer { Darwin.close(socket) }
+        guard Darwin.listen(socket, 2) == 0, fcntl(socket, F_SETFL, O_NONBLOCK) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        let (store, directory, _) = try makePairingStore(), mirror = directory.appending(path: "mirror")
+        let digest = try writeRelease(to: mirror), downloader = LocalDDIDownloader()
+        let repository = DDIRepository(baseDirectory: directory.appending(path: "ddi"), mirrorBaseURL: mirror,
+                                       downloader: downloader, verifier: RustLocationEngine.makeDDIVerifier())
+        _ = try await repository.importLocalFiles(from: [mirror])
+        let cached = await repository.cachedDirectory(), release = try XCTUnwrap(cached)
+        let engine = RustLocationEngine(handle: try RustEngineHandle(), pairingStore: store, ddiRepository: repository, timeoutMs: 15_000)
+        let id = try XCTUnwrap(DeviceID(rawValue: "cached-ddi-device"))
+        _ = try await store.importPairing(data: LockdownPlist(udid: id.rawValue).data(), endpointHost: host, deviceName: nil)
+        let operation = Task {
+            do throws(EngineError) {
+                try await engine.setLocation(Place.defaults[0].coordinate, on: id) { stage in
+                    XCTAssertEqual(stage, .connecting)
+                }
+                XCTFail("拒绝服务连接的设备不应接受定位")
+            } catch {
+                XCTAssertEqual(error.code, .tunnel_unavailable)
+                XCTAssertFalse(error.outcomeUnknown)
+            }
+        }
+        defer { operation.cancel() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        var peer = Darwin.accept(socket, nil, nil)
+        while peer < 0 && (errno == EWOULDBLOCK || errno == EINTR) && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+            peer = Darwin.accept(socket, nil, nil)
+        }
+        guard peer >= 0 else { return XCTFail("Rust 未在时限内建立回环 TCP 连接") }
+        defer { Darwin.close(peer) }
+        // 预检查失败也只连接一次；在途租约才能证明已经进入缓存直用路径。
+        try await repository.clearCache()
+        XCTAssertEqual(try RustCoreBridge.verifyDDI(at: release), digest)
+        XCTAssertEqual(Darwin.shutdown(peer, SHUT_RDWR), 0)
+        await operation.value
+        let extra = Darwin.accept(socket, nil, nil), acceptError = errno
+        if extra >= 0 { Darwin.close(extra) }
+        XCTAssertEqual(extra, -1)
+        XCTAssertEqual(acceptError, EWOULDBLOCK)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: release.path))
+        let files = await downloader.files
+        XCTAssertTrue(files.isEmpty)
+    }
+
     private func makeEngine(timeoutMs: UInt32 = 2_000) throws -> (RustLocationEngine, PairingStore) {
         let (store, directory, _) = try makePairingStore()
         let repository = DDIRepository(baseDirectory: directory.appending(path: "ddi"), mirrorBaseURL: directory,

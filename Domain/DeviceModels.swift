@@ -90,3 +90,30 @@ struct AppliedLocationRecord: Codable, Equatable, Sendable {
     let exitIP: String?
     let confidence: AppliedConfidence
 }
+
+enum PendingLocationAction: Equatable, Sendable {
+    case set(name: String, coordinate: WGS84Coordinate, source: LocationSource, exitIP: String?, createdAt: Date)
+    case clear(createdAt: Date)
+
+    var createdAt: Date {
+        switch self {
+        case .set(_, _, _, _, let date), .clear(let date): date
+        }
+    }
+
+    var displayTitle: String {
+        switch self {
+        case .set(let name, _, _, _, _): name
+        case .clear: String(localized: "恢复真实定位")
+        }
+    }
+
+    func isFresh(at now: Date = Date(), maxAge: TimeInterval = 600) -> Bool {
+        0...maxAge ~= now.timeIntervalSince(createdAt)
+    }
+}
+
+enum DDICacheStatus: Equatable, Sendable {
+    case notDownloaded
+    case ready(versionID: String, totalBytes: Int64)
+}

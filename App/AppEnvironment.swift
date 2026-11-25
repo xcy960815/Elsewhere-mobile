@@ -11,6 +11,8 @@ final class AppEnvironment: ObservableObject {
     let pairingStore: PairingStore
     let tunnelCoordinator: TunnelCoordinator
     let stateStore: AppStateStore
+    let ddiRepository: DDIRepository?
+    private let pathUpdates: (@Sendable () -> AsyncStream<Void>)?
     let exitService: ExitIPService
     let notifier: Notifier
     let commandService: CommandService
@@ -20,12 +22,15 @@ final class AppEnvironment: ObservableObject {
     var abiVersion: UInt32 { engine.abiVersion }
 
     init(engine: any LocationEngineProtocol, pairingStore: PairingStore, tunnel: TunnelCoordinator,
-         stateStore: AppStateStore, exitService: ExitIPService, notifier: Notifier, capabilities: AppCapabilities = .current) {
+         stateStore: AppStateStore, exitService: ExitIPService, notifier: Notifier, capabilities: AppCapabilities = .current,
+         ddiRepository: DDIRepository? = nil, pathUpdates: (@Sendable () -> AsyncStream<Void>)? = nil) {
         self.capabilities = capabilities
         self.engine = engine
         self.pairingStore = pairingStore
         tunnelCoordinator = tunnel
         self.stateStore = stateStore
+        self.ddiRepository = ddiRepository
+        self.pathUpdates = pathUpdates
         self.exitService = exitService
         self.notifier = notifier
         commandService = CommandService(engine: engine, tunnel: tunnel, stateStore: stateStore, exitService: exitService)
@@ -43,10 +48,41 @@ final class AppEnvironment: ObservableObject {
 
     static func live() throws(EngineError) -> AppEnvironment {
         let pairings = PairingStore(inspector: RustLocationEngine.makePairingInspector())
+        let stateStore = AppStateStore()
+        let ddiRepository = DDIRepository(proxyProvider: { try? await stateStore.load().settings.parsedProxy.get() },
+                                          verifier: RustLocationEngine.makeDDIVerifier())
         let engine = RustLocationEngine(handle: try RustEngineHandle(), pairingStore: pairings,
-                                        ddiRepository: DDIRepository(verifier: RustLocationEngine.makeDDIVerifier()))
+                                        ddiRepository: ddiRepository)
         return AppEnvironment(engine: engine, pairingStore: pairings, tunnel: TunnelCoordinator(),
-                              stateStore: AppStateStore(), exitService: ExitIPService(), notifier: Notifier())
+                              stateStore: stateStore, exitService: ExitIPService(), notifier: Notifier(), ddiRepository: ddiRepository)
+    }
+
+    func monitorNetworkPath(onChange: @escaping @MainActor () -> Void) -> Task<Void, Never> {
+        Task {
+            if let pathUpdates {
+                for await _ in pathUpdates() {
+                    if !(await tunnelCoordinator.isSwitchingChannel) { onChange() }
+                }
+                return
+            }
+            let (events, signal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let paths = NWPathMonitor()
+            paths.pathUpdateHandler = { _ in signal.yield(()) }
+            paths.start(queue: DispatchQueue(label: AppIdentifiers.current.hostBundleID + ".device-path"))
+            var initial = true
+            var debounce: Task<Void, Never>?
+            defer { debounce?.cancel(); paths.cancel(); signal.finish() }
+            for await _ in events {
+                if initial { initial = false; continue }
+                guard !(await tunnelCoordinator.isSwitchingChannel) else { continue }
+                debounce?.cancel()
+                debounce = Task {
+                    do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                    guard !Task.isCancelled, !(await tunnelCoordinator.isSwitchingChannel) else { return }
+                    onChange()
+                }
+            }
+        }
     }
 
     func monitorExit(context: @escaping @MainActor () -> (AppSettings, ExitProxyAddress?, [TargetDevice]),

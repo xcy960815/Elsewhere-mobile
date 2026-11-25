@@ -1,6 +1,870 @@
 {
   "sourceLanguage" : "zh-Hans",
   "strings" : {
+    "无法查询出口" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t look up the proxy exit"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法查询出口"
+          }
+        }
+      }
+    },
+    "开发者组件已就绪" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Developer components are ready"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开发者组件已就绪"
+          }
+        }
+      }
+    },
+    "无法准备开发者组件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t prepare developer components"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法准备开发者组件"
+          }
+        }
+      }
+    },
+    "无法导入开发者组件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t import developer components"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法导入开发者组件"
+          }
+        }
+      }
+    },
+    "正在清理开发者组件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clearing developer components"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在清理开发者组件"
+          }
+        }
+      }
+    },
+    "开发者组件缓存已清除" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Developer component cache cleared"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开发者组件缓存已清除"
+          }
+        }
+      }
+    },
+    "无法清理开发者组件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t clear developer components"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法清理开发者组件"
+          }
+        }
+      }
+    },
+    "待应用目标 · %@\n代理与回环通道互斥时，可开启 LocalDevVPN / StosVPN 或解锁设备后自动应用。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pending location · %@\nIf your proxy and loopback tunnel can’t run together, turn on LocalDevVPN / StosVPN. The location will be applied automatically once the tunnel is available and the device is unlocked."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "待应用目标 · %@\n代理与回环通道互斥时，可开启 LocalDevVPN / StosVPN 或解锁设备后自动应用。"
+          }
+        }
+      }
+    },
+    "立即检测并应用" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check and Apply Now"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "立即检测并应用"
+          }
+        }
+      }
+    },
+    "管理" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Manage"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "管理"
+          }
+        }
+      }
+    },
+    "演示模式 · 定位操作仅作用于模拟设备" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Demo mode · Location changes only affect simulated devices"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "演示模式 · 定位操作仅作用于模拟设备"
+          }
+        }
+      }
+    },
+    "未连上回环通道，请打开 LocalDevVPN / StosVPN 后点刷新" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loopback tunnel disconnected. Turn on LocalDevVPN / StosVPN, then tap Refresh."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未连上回环通道，请打开 LocalDevVPN / StosVPN 后点刷新"
+          }
+        }
+      }
+    },
+    "请先解锁目标设备" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unlock the target device first."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先解锁目标设备"
+          }
+        }
+      }
+    },
+    "请在目标设备「设置 › 隐私与安全性 › 开发者模式」开启" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On the target device, turn on Developer Mode in Settings › Privacy & Security."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在目标设备「设置 › 隐私与安全性 › 开发者模式」开启"
+          }
+        }
+      }
+    },
+    "在地图查看" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show on Map"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在地图查看"
+          }
+        }
+      }
+    },
+    "清除模拟" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear Simulated Location"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除模拟"
+          }
+        }
+      }
+    },
+    "居中位置" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Center on Location"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "居中位置"
+          }
+        }
+      }
+    },
+    "待应用 · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pending · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "待应用 · %@"
+          }
+        }
+      }
+    },
+    "立即应用" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apply Now"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "立即应用"
+          }
+        }
+      }
+    },
+    "先进入主界面" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Continue to App"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "先进入主界面"
+          }
+        }
+      }
+    },
+    "选择使用场景" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose How to Connect"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择使用场景"
+          }
+        }
+      }
+    },
+    "目标设备须已开启「设置 › 隐私与安全性 › 开发者模式」。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Developer Mode must be enabled on the target device in Settings › Privacy & Security."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "目标设备须已开启「设置 › 隐私与安全性 › 开发者模式」。"
+          }
+        }
+      }
+    },
+    "修改这台设备（本机）· 推荐" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Change This Device’s Location · Recommended"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "修改这台设备（本机）· 推荐"
+          }
+        }
+      }
+    },
+    "配合 LocalDevVPN / StosVPN，或完整版的内置通道使用。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use LocalDevVPN / StosVPN, or the built-in tunnel in the full edition."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配合 LocalDevVPN / StosVPN，或完整版的内置通道使用。"
+          }
+        }
+      }
+    },
+    "修改同一 Wi-Fi 的另一台设备" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Change Another Device’s Location on the Same Wi-Fi"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "修改同一 Wi-Fi 的另一台设备"
+          }
+        }
+      }
+    },
+    "通过局域网无线连接另一台 iPhone / iPad。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect wirelessly to another iPhone or iPad on your local network."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通过局域网无线连接另一台 iPhone / iPad。"
+          }
+        }
+      }
+    },
+    "先用演示模式体验" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Try Demo Mode First"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "先用演示模式体验"
+          }
+        }
+      }
+    },
+    "导入配对与准备组件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Import Pairing and Prepare Components"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导入配对与准备组件"
+          }
+        }
+      }
+    },
+    "用已信任目标设备的电脑，通过 idevice_pair 导出 Lockdown 配对文件，保存到本机的「文件」。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On a computer trusted by the target device, use idevice_pair to export the Lockdown pairing file. Save it in Files on this device."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用已信任目标设备的电脑，通过 idevice_pair 导出 Lockdown 配对文件，保存到本机的「文件」。"
+          }
+        }
+      }
+    },
+    "本机回环对端 IP" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This Device’s Loopback Peer IP"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机回环对端 IP"
+          }
+        }
+      }
+    },
+    "同一 Wi-Fi 下目标设备 IP" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Target Device IP on the Same Wi-Fi"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同一 Wi-Fi 下目标设备 IP"
+          }
+        }
+      }
+    },
+    "请与回环通道对端一致，默认为 %@。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use the loopback tunnel’s peer address. The default is %@."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请与回环通道对端一致，默认为 %@。"
+          }
+        }
+      }
+    },
+    "请输入有效的回环对端 IPv4 或 IPv6 地址。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter a valid IPv4 or IPv6 address for the loopback peer."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请输入有效的回环对端 IPv4 或 IPv6 地址。"
+          }
+        }
+      }
+    },
+    "请填写同一 Wi-Fi 下目标设备的 IP。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter the IP address of the target device on the same Wi-Fi network."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请填写同一 Wi-Fi 下目标设备的 IP。"
+          }
+        }
+      }
+    },
+    "请输入有效的局域网 IPv4 或 IPv6 地址。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter a valid local network IPv4 or IPv6 address."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请输入有效的局域网 IPv4 或 IPv6 地址。"
+          }
+        }
+      }
+    },
+    "开发者组件（DDI）" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Developer Components (DDI)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开发者组件（DDI）"
+          }
+        }
+      }
+    },
+    "已就绪 · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ready · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已就绪 · %@"
+          }
+        }
+      }
+    },
+    "建议趁当前网络或代理畅通时预先下载，切到本机回环后无需联网。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download the components while your network or proxy is available, so you won’t need internet access after switching to the loopback tunnel."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "建议趁当前网络或代理畅通时预先下载，切到本机回环后无需联网。"
+          }
+        }
+      }
+    },
+    "预下载组件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download Components in Advance"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预下载组件"
+          }
+        }
+      }
+    },
+    "从文件导入" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Import from Files"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从文件导入"
+          }
+        }
+      }
+    },
+    "无法打开开发者组件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t open developer components"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法打开开发者组件"
+          }
+        }
+      }
+    },
+    "接通通道并测试" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect and Test"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "接通通道并测试"
+          }
+        }
+      }
+    },
+    "让两台设备连接同一 Wi-Fi，解锁目标设备，然后点「测试连接」。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect both devices to the same Wi-Fi network, unlock the target device, then tap Test Connection."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "让两台设备连接同一 Wi-Fi，解锁目标设备，然后点「测试连接」。"
+          }
+        }
+      }
+    },
+    "点「测试连接」启动内置通道，首次使用需批准系统 VPN 配置。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap Test Connection to start the built-in tunnel. You’ll need to allow the system VPN configuration the first time."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "点「测试连接」启动内置通道，首次使用需批准系统 VPN 配置。"
+          }
+        }
+      }
+    },
+    "先切去打开 LocalDevVPN / StosVPN，确认回环对端与目标 IP 一致，再回到这里点「测试连接」。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open LocalDevVPN / StosVPN and turn on the tunnel. Check that the loopback peer matches the target IP, then return here and tap Test Connection."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "先切去打开 LocalDevVPN / StosVPN，确认回环对端与目标 IP 一致，再回到这里点「测试连接」。"
+          }
+        }
+      }
+    },
+    "本地缓存" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local Cache"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地缓存"
+          }
+        }
+      }
+    },
+    "未下载" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not Downloaded"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未下载"
+          }
+        }
+      }
+    },
+    "预下载开发者组件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download Developer Components in Advance"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预下载开发者组件"
+          }
+        }
+      }
+    },
+    "从文件导入离线组件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Import Offline Components from Files"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从文件导入离线组件"
+          }
+        }
+      }
+    },
+    "清理本地缓存" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear Local Cache"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清理本地缓存"
+          }
+        }
+      }
+    },
+    "首次设置模拟位置需要开发者磁盘镜像，建议趁代理畅通时预下载；若已在设置中填写自定义 HTTP 代理，下载会沿用该代理。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A developer disk image is required the first time you set a simulated location. Download it in advance while your proxy is available. Downloads use the custom HTTP proxy configured in Settings, if any."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "首次设置模拟位置需要开发者磁盘镜像，建议趁代理畅通时预下载；若已在设置中填写自定义 HTTP 代理，下载会沿用该代理。"
+          }
+        }
+      }
+    },
+    "前台及切回 App 时检测出口变化，后台刷新由系统安排；若代理与本机回环 VPN 互斥，可先点「跟随出口」锁定位置，切回环通道后自动应用。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The app checks for proxy exit changes while open and when you return to it. The system schedules background refreshes. If your proxy and loopback VPN can’t run together, tap Follow Exit to save the location; it will be applied automatically after you switch to the loopback tunnel."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "前台及切回 App 时检测出口变化，后台刷新由系统安排；若代理与本机回环 VPN 互斥，可先点「跟随出口」锁定位置，切回环通道后自动应用。"
+          }
+        }
+      }
+    },
+    "本机回环 %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local Loopback %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机回环 %@"
+          }
+        }
+      }
+    },
+    "输入局域网 IP" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter Local Network IP"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入局域网 IP"
+          }
+        }
+      }
+    },
     "构建版本" : {
       "localizations" : {
         "en" : {
@@ -2227,6 +3091,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "开发者服务不可用，请检查开发者模式"
+          }
+        }
+      }
+    },
+    "开发者组件 trust cache 无效" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Invalid developer component trust cache"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开发者组件 trust cache 无效"
+          }
+        }
+      }
+    },
+    "开发者组件 trust cache 摘要不匹配" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Developer component trust cache digest mismatch"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开发者组件 trust cache 摘要不匹配"
           }
         }
       }

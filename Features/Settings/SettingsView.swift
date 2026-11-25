@@ -1,8 +1,10 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @Environment(AppStore.self) private var store
     @State private var proxyText = ""
+    @State private var importingDDI = false
     let openOnboarding: () -> Void
     let replaySplash: () -> Void
 
@@ -17,7 +19,7 @@ struct SettingsView: View {
                 } label: {
                     LabeledContent("设备与配对", value: String(localized: "\(store.pairingRecords.count) 个配对 · \(store.readyDevices.count) 台就绪"))
                 }
-                Toggle("同时修改所有设备", isOn: setting(\.applyToAll))
+                if store.pairingRecords.count > 1 { Toggle("同时修改所有设备", isOn: setting(\.applyToAll)) }
                 Toggle("重新连接后恢复定位", isOn: setting(\.autoRestore))
                 if store.capabilities.hasBuiltInTunnel {
                     Picker("连接通道", selection: setting(\.channelMode)) {
@@ -36,7 +38,26 @@ struct SettingsView: View {
                 }
                 Button("打开配置向导", action: openOnboarding).disabled(store.isDemo)
             }
-            Section("代理出口") {
+            Section {
+                switch store.ddiCacheStatus {
+                case .ready(_, let totalBytes):
+                    LabeledContent("本地缓存", value: ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file))
+                case .notDownloaded:
+                    LabeledContent("本地缓存", value: String(localized: "未下载"))
+                }
+                if let message = store.busyMessage { ProgressView(value: store.ddiProgress) { Text(message).font(.caption) } }
+                Button("预下载开发者组件") { Task { await store.prepareDDICache(forceRefresh: true) } }
+                Button("从文件导入离线组件") { importingDDI = true }
+                if case .ready = store.ddiCacheStatus {
+                    Button("清理本地缓存", role: .destructive) { Task { await store.clearDDICache() } }
+                }
+            } header: {
+                Text("开发者组件（DDI）")
+            } footer: {
+                Text("首次设置模拟位置需要开发者磁盘镜像，建议趁代理畅通时预下载；若已在设置中填写自定义 HTTP 代理，下载会沿用该代理。")
+            }
+            .disabled(store.busyMessage != nil || store.isDemo)
+            Section {
                 Toggle("代理出口功能", isOn: setting(\.exitFeaturesEnabled))
                 if store.settings.exitFeaturesEnabled {
                     Picker("出口变化时", selection: setting(\.watchMode)) {
@@ -61,6 +82,10 @@ struct SettingsView: View {
                         Text("留空时使用本机网络。").font(.footnote).foregroundStyle(.secondary)
                     }
                 }
+            } header: {
+                Text("代理出口")
+            } footer: {
+                Text("前台及切回 App 时检测出口变化，后台刷新由系统安排；若代理与本机回环 VPN 互斥，可先点「跟随出口」锁定位置，切回环通道后自动应用。")
             }
             Section("演示与外观") {
                 Toggle("演示模式（无需真机）", isOn: Binding(get: { store.isDemo }, set: { enabled in
@@ -83,6 +108,13 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("设置")
+        .fileImporter(isPresented: $importingDDI, allowedContentTypes: [.folder, .propertyList, .data], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls): Task { await store.importLocalDDI(urls: urls) }
+            case .failure(let error):
+                if (error as? CocoaError)?.code != .userCancelled { store.fail(String(localized: "无法打开开发者组件"), error) }
+            }
+        }
         .onChange(of: store.settings.customProxyText, initial: true) { _, address in proxyText = address }
         .sensoryFeedback(trigger: store.feedback) { _, message in message?.sensation }
     }

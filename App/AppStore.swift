@@ -8,8 +8,17 @@ import SwiftUI
     private(set) var deviceStates = [DeviceID: DeviceConnectionState]()
     private(set) var exit: ExitInfo?
     private(set) var pendingExitEvent: PendingExitEvent?
+    private(set) var pendingAction: PendingLocationAction?
+    private(set) var ddiCacheStatus: DDICacheStatus = .notDownloaded
+    private(set) var ddiProgress: Double?
     var pendingExitChange: ExitInfo? { pendingExitEvent?.exit }
     private(set) var exitError: String?
+    @ObservationIgnored private var exitFeedbackID: UUID?
+
+    private func dismissExitError() {
+        if let exitFeedbackID, feedback?.id == exitFeedbackID { dismissFeedback() }
+        exitFeedbackID = nil
+    }
     @ObservationIgnored private var following: Task<(ExitInfo, BatchOutcome), Error>?
     private var exitRequest: Task<ExitRefreshOutcome?, Never>?
     private(set) var busyMessage: String?
@@ -24,10 +33,11 @@ import SwiftUI
     }
     private(set) var timeZoneResult = TimeZoneMatchResult.unavailable
     private(set) var tunnelStatus = TunnelConnectionStatus.disconnected
-    @ObservationIgnored private(set) var loaded = false
+    private(set) var loaded = false
     typealias ExitSample = (exit: ExitInfo, proxy: ExitProxyAddress?)
     @ObservationIgnored private var coldExitLookup: Task<ExitSample, Error>?
     @ObservationIgnored private var deviceWatch: Task<Void, Never>?
+    @ObservationIgnored private var pathWatch: Task<Void, Never>?
     @ObservationIgnored private var deviceRefresh: Task<Void, Never>?
     private var active = false
     @ObservationIgnored private var monitoring: Task<Void, Never>?
@@ -46,9 +56,10 @@ import SwiftUI
     var selectedRecord: AppliedLocationRecord? { (selectedDeviceID ?? selectedDevice?.id).flatMap { records[$0] } }
     private var targets: [TargetDevice] { settings.applyToAll ? readyDevices : readyDevices.filter { $0.id == selectedDevice?.id } }
     var canOperate: Bool { busyMessage == nil && !targets.isEmpty }
+    var canSelectTarget: Bool { busyMessage == nil && !needsPairingSetup }
     var exitProxy: ExitProxyAddress? { try? settings.parsedProxy.get() }
     var customProxyInvalid: Bool { if case .failure = settings.parsedProxy { true } else { false } }
-    var needsOnboarding: Bool { !isDemo && !settings.hasCompletedOnboarding && readyDevices.isEmpty }
+    var needsOnboarding: Bool { loaded && !isDemo && !settings.hasCompletedOnboarding && readyDevices.isEmpty }
 
     init(environment: AppEnvironment) {
         self.environment = environment
@@ -91,11 +102,15 @@ import SwiftUI
     func load() async {
         let env = environment, wasActive = active
         guard await loadSettingsOnly(), !wasActive || active else { return }
-        await refreshDevices()
-        guard env === environment, !wasActive || active, settings.exitFeaturesEnabled, !customProxyInvalid else { return }
-        await queryExit { [settings, exitProxy, targets] in
-            await env.exitMonitor.handleForegroundReturn(settings: settings, proxy: exitProxy, targets: targets)
+        await refreshDDICacheStatus()
+        guard env === environment, !wasActive || active else { return }
+        if settings.exitFeaturesEnabled, !customProxyInvalid {
+            await queryExit { [settings, exitProxy, targets] in
+                await env.exitMonitor.handleForegroundReturn(settings: settings, proxy: exitProxy, targets: targets)
+            }
         }
+        guard env === environment, !wasActive || active else { return }
+        await refreshDevices()
     }
 
     func handleSceneActive() async {
@@ -109,6 +124,8 @@ import SwiftUI
         monitoring?.cancel()
         deviceWatch?.cancel()
         deviceWatch = nil
+        pathWatch?.cancel()
+        pathWatch = nil
         zoneCheck?.cancel()
         await updateTunnelStatus()
     }
@@ -120,17 +137,24 @@ import SwiftUI
     }
     private func startMonitoring() {
         monitoring?.cancel()
+        deviceWatch?.cancel()
+        deviceWatch = nil
         guard loaded, active else { return }
-        if !isDemo, deviceWatch == nil {
+        if !isDemo, pathWatch == nil {
+            pathWatch = environment.monitorNetworkPath { [weak self] in
+                Task {
+                    guard let self, self.active else { return }
+                    await self.refreshDevices(silently: true)
+                }
+            }
+        }
+        if !isDemo, settings.channelMode == .existingRoute {
             deviceWatch = Task { [weak self] in
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(15)) } catch { return }
                     guard let self else { return }
                     guard self.active, self.busyMessage == nil, self.deviceRefresh == nil else { continue }
-                    let needsProbe = self.pairingRecords.contains {
-                        self.deviceStates[$0.probeID]?.isReady != true || self.records[$0.probeID]?.confidence.isConfirmedSimulated == true
-                    }
-                    if needsProbe {
+                    if self.readyDevices.contains(where: { self.records[$0.id]?.confidence.isConfirmedSimulated == true }) {
                         await self.refreshDevices(silently: true)
                     }
                 }
@@ -157,8 +181,12 @@ import SwiftUI
         if let deviceRefresh { return await deviceRefresh.value }
         guard busyMessage == nil else { return }
         let task = Task {
-            defer { deviceRefresh = nil }
             await performDeviceRefresh(silently: silently)
+            deviceRefresh = nil
+            if !Task.isCancelled, busyMessage == nil, let action = pendingAction {
+                if !action.isFresh() { pendingAction = nil }
+                else if !targets.isEmpty { await executePendingAction() }
+            }
         }
         deviceRefresh = task
         if silently {
@@ -205,14 +233,22 @@ import SwiftUI
     }
 
     private func probe(_ id: DeviceID, host: String, silently: Bool = false) async -> Bool {
-        let previous = deviceStates[id]
+        let previous = deviceStates[id], env = environment
         if !silently { deviceStates[id] = DeviceStateMachine.reduce(state: previous ?? .unpaired, event: .probeStarted) }
-        let (bound, state, error) = await environment.probe(id, host: host, settings: settings)
+        let (bound, state, error) = await env.probe(id, host: host, settings: settings)
+        guard env === environment else { return false }
         if Task.isCancelled {
             if !silently { deviceStates[id] = previous }
             return false
         }
-        if id != bound { deviceStates[id] = nil }
+        if id != bound {
+            deviceStates[id] = nil
+            if self.state.selectedDeviceID == id {
+                self.state.selectedDeviceID = bound
+                try? await env.stateStore.saveSelectedDeviceID(bound)
+                guard env === environment else { return false }
+            }
+        }
         if deviceStates[bound] != state { deviceStates[bound] = state }
         if !silently || previous != state {
             if let error { fail(String(localized: "无法连接设备 · ") + host, error) }
@@ -269,7 +305,7 @@ import SwiftUI
             timeZoneResult = nextCheck == nil ? result : .withinGracePeriod
             if let nextCheck {
                 do { try await Task.sleep(for: .seconds(max(0, nextCheck.timeIntervalSinceNow))) } catch { return }
-                if active, !isDemo, busyMessage == nil {
+                if active, !isDemo, busyMessage == nil, settings.channelMode == .existingRoute {
                     await refreshDevices(silently: true)
                 }
                 if !Task.isCancelled { checkTimeZone() }
@@ -307,7 +343,13 @@ import SwiftUI
             return
         case .disabled: return
         }
-        if let exitError { feedback = .init(kind: .failure, title: String(localized: "出口查询异常"), detail: exitError, rawLog: exitError) }
+        if let exitError {
+            let message = FeedbackMessage(kind: .failure, title: String(localized: "出口查询异常"), detail: exitError, rawLog: exitError)
+            feedback = message
+            exitFeedbackID = message.id
+        } else {
+            dismissExitError()
+        }
     }
 
     func dismissPendingExitChange() async {
@@ -335,9 +377,12 @@ import SwiftUI
     }
 
     private func isCurrent(_ event: PendingExitEvent) -> Bool {
-        let age = Date().timeIntervalSince(event.createdAt)
-        return (0...60).contains(age) && event.exit.sampledAt.timeIntervalSinceNow >= -60
-            && !(exit.map { $0.sampledAt > event.exit.sampledAt && $0.ip != event.exit.ip } ?? false)
+        (0...60).contains(Date().timeIntervalSince(event.createdAt)) && isFreshExit(event.exit)
+    }
+
+    private func isFreshExit(_ sample: ExitInfo) -> Bool {
+        (0...60).contains(Date().timeIntervalSince(sample.sampledAt))
+            && !(exit.map { $0.sampledAt > sample.sampledAt && $0.ip != sample.ip } ?? false)
     }
 
     func followExit(prefetched: ExitInfo? = nil) async {
@@ -345,6 +390,70 @@ import SwiftUI
             await followNotification(event.id)
         } else {
             await followExit(sample: prefetched, event: nil)
+        }
+    }
+
+    func applyOrQueue(place: Place, source: LocationSource) async {
+        await applyOrQueue(name: place.displayName, coordinate: place.coordinate, source: source)
+    }
+
+    func applyOrQueue(name: String, coordinate: WGS84Coordinate, source: LocationSource) async {
+        if !targets.isEmpty {
+            pendingAction = nil
+            await apply(name: name, coordinate: coordinate, source: source)
+        } else if canSelectTarget {
+            pendingAction = .set(name: name, coordinate: coordinate, source: source, exitIP: nil, createdAt: Date())
+        }
+    }
+
+    func followExitOrQueue(prefetched: ExitInfo? = nil) async {
+        if let deviceRefresh { await deviceRefresh.value }
+        if !targets.isEmpty {
+            pendingAction = nil
+            await followExit(prefetched: prefetched)
+            return
+        }
+        guard canSelectTarget, settings.exitFeaturesEnabled else { return }
+        if case .failure(let error) = settings.parsedProxy { fail(String(localized: "自定义代理地址无效"), error); return }
+        let env = environment, proxy = exitProxy
+        busyMessage = String(localized: "正在查询出口")
+        defer { busyMessage = nil }
+        do {
+            let info: ExitInfo
+            if let cached = prefetched ?? exit, isFreshExit(cached) { info = cached }
+            else { info = try await env.exitService.lookup(proxy: proxy) }
+            try Task.checkCancellation()
+            guard env === environment, settings.exitFeaturesEnabled, exitProxy == proxy else { return }
+            receive(.updated(info))
+            pendingAction = .set(name: info.displayCity, coordinate: info.coordinate, source: .exitIP, exitIP: info.ip, createdAt: Date())
+        } catch { fail(String(localized: "无法查询出口"), error) }
+    }
+
+    func clearLocationOrQueue() async {
+        if !targets.isEmpty {
+            pendingAction = nil
+            await clearLocation()
+        } else if canSelectTarget {
+            pendingAction = .clear(createdAt: Date())
+        }
+    }
+
+    func cancelPendingAction() { pendingAction = nil }
+
+    func executePendingAction(probeFirst: Bool = false) async {
+        if probeFirst || targets.isEmpty { await refreshDevices() }
+        guard busyMessage == nil, let action = pendingAction else { return }
+        pendingAction = nil
+        guard action.isFresh() else { return }
+        let outcome: BatchOutcome?
+        switch action {
+        case let .set(name, coordinate, source, exitIP, _):
+            guard source != .exitIP || settings.exitFeaturesEnabled else { return }
+            outcome = await apply(name: name, coordinate: coordinate, source: source, exitIP: exitIP)
+        case .clear: outcome = await clearLocation()
+        }
+        if pendingAction == nil, outcome.map({ !$0.failed.isEmpty && $0.succeeded.isEmpty && $0.unknown.isEmpty }) ?? true {
+            pendingAction = action
         }
     }
 
@@ -364,14 +473,17 @@ import SwiftUI
             return result
         }
     }
-    func apply(place: Place, source: LocationSource) async { await apply(name: place.displayName, coordinate: place.coordinate, source: source) }
-    func apply(name: String, coordinate: WGS84Coordinate, source: LocationSource) async {
+    @discardableResult
+    func apply(place: Place, source: LocationSource) async -> BatchOutcome? { await apply(name: place.displayName, coordinate: place.coordinate, source: source) }
+    @discardableResult
+    func apply(name: String, coordinate: WGS84Coordinate, source: LocationSource, exitIP: String? = nil) async -> BatchOutcome? {
         await operate(String(localized: "正在设置模拟位置")) { targets, stage in
-            await self.environment.commandService.applyLocation(name: name, coordinate: coordinate, source: source, exitIP: nil,
+            await self.environment.commandService.applyLocation(name: name, coordinate: coordinate, source: source, exitIP: exitIP,
                 targets: targets, settings: self.settings, onStage: stage)
         }
     }
-    func clearLocation() async {
+    @discardableResult
+    func clearLocation() async -> BatchOutcome? {
         await operate(String(localized: "正在恢复真实定位")) { targets, stage in
             await self.environment.commandService.clearLocation(targets: targets, allReadyDevices: self.readyDevices, settings: self.settings, onStage: stage)
         }
@@ -393,20 +505,20 @@ import SwiftUI
         if let name = deviceStates[id]?.device?.name { busyMessage = String(localized: "\(name) · \(stage.title)") }
         else { busyMessage = stage.title }
     }
-    private func operate(_ title: String, targetIDs: Set<DeviceID>? = nil, _ action: @MainActor ([TargetDevice], @escaping AppEnvironment.StageReport) async throws -> BatchOutcome) async {
+    @discardableResult
+    private func operate(_ title: String, targetIDs: Set<DeviceID>? = nil, _ action: @MainActor ([TargetDevice], @escaping AppEnvironment.StageReport) async throws -> BatchOutcome) async -> BatchOutcome? {
         if let deviceRefresh { await deviceRefresh.value }
         guard busyMessage == nil else {
             feedback = .init(kind: .failure, title: String(localized: "设备正忙：\(busyMessage ?? title)"))
-            return
+            return nil
         }
         let batch = targetIDs.map { ids in readyDevices.filter { ids.contains($0.id) } } ?? targets
-        guard !batch.isEmpty else { feedback = .init(kind: .failure, title: String(localized: "没有就绪的目标设备"), detail: String(localized: "请检查配对和通道连接。"), rawLog: "readyTargets=0"); return }
+        guard !batch.isEmpty else { feedback = .init(kind: .failure, title: String(localized: "没有就绪的目标设备"), detail: String(localized: "请检查配对和通道连接。"), rawLog: "readyTargets=0"); return nil }
         busyMessage = title
         defer { busyMessage = nil }
+        let result: BatchOutcome
         do {
-            let result = try await environment.withProgress({ self.progress($0, $1) }) { try await action(batch, $0) }
-            finish(result, title: String(localized: "定位操作完成"))
-            try await refreshDisplaySnapshot()
+            result = try await environment.withProgress({ self.progress($0, $1) }) { try await action(batch, $0) }
         } catch {
             for device in batch {
                 if let current = deviceStates[device.id] {
@@ -414,8 +526,13 @@ import SwiftUI
                 }
             }
             fail(String(localized: "定位操作失败"), error)
+            await updateTunnelStatus()
+            return nil
         }
+        finish(result, title: String(localized: "定位操作完成"))
+        do { try await refreshDisplaySnapshot() } catch { fail(String(localized: "定位操作失败"), error) }
         await updateTunnelStatus()
+        return result
     }
     private func finish(_ result: BatchOutcome, title: String) {
         for device in result.succeeded + result.unknown {
@@ -460,7 +577,10 @@ import SwiftUI
         try await editPairing { try await $0.importPairing(data: data, endpointHost: endpointHost, deviceName: deviceName) }
     }
     func deletePairing(id: UUID) async {
-        if (try? await editPairing { try await $0.delete(id: id) }) != nil { await refreshDevices() }
+        if (try? await editPairing { try await $0.delete(id: id) }) != nil {
+            if pairingRecords.isEmpty { pendingAction = nil }
+            await refreshDevices()
+        }
     }
     func updateEndpointHost(_ host: String, for id: UUID) async {
         if (try? await editPairing { try await $0.updateEndpointHost(host, for: id) }) != nil { await refreshDevices() }
@@ -471,7 +591,14 @@ import SwiftUI
         state.settings = effectiveSettings
         let updated = settings
         let reset = previous.exitFeaturesEnabled != updated.exitFeaturesEnabled || previous.customProxyText != updated.customProxyText
-        if reset { monitoring?.cancel(); following?.cancel(); exitRequest?.cancel(); (exit, pendingExitEvent, exitError, exitRequest) = (nil, nil, nil, nil) }
+        if reset {
+            if case .set(_, _, .exitIP, _, _) = pendingAction { pendingAction = nil }
+            monitoring?.cancel()
+            following?.cancel()
+            exitRequest?.cancel()
+            (exit, pendingExitEvent, exitError, exitRequest) = (nil, nil, nil, nil)
+            dismissExitError()
+        }
         do {
             try await env.stateStore.saveSettings(updated)
             guard env === environment, settings == updated else { return }
@@ -482,7 +609,7 @@ import SwiftUI
             }
             guard env === environment, settings == updated else { return }
             if reset && updated.exitFeaturesEnabled { await refreshExit() }
-            if reset || previous.watchMode != updated.watchMode { startMonitoring() }
+            if reset || previous.watchMode != updated.watchMode || previous.channelMode != updated.channelMode { startMonitoring() }
         } catch { if env === environment, settings == updated { state.settings = previous; fail(String(localized: "无法保存设置"), error); startMonitoring() } }
     }
     func markSplashSeen() async {
@@ -493,6 +620,54 @@ import SwiftUI
         } catch { fail(String(localized: "无法保存设置"), error) }
     }
     func completeOnboarding() async { await updateSettings { $0.hasCompletedOnboarding = true } }
+
+    func refreshDDICacheStatus() async {
+        let env = environment
+        let status = await env.ddiRepository?.cacheStatus() ?? .notDownloaded
+        if env === environment { ddiCacheStatus = status }
+    }
+
+    func prepareDDICache(forceRefresh: Bool = false) async {
+        guard busyMessage == nil, deviceRefresh == nil, let repository = environment.ddiRepository else { return }
+        if case .failure(let error) = settings.parsedProxy { fail(String(localized: "自定义代理地址无效"), error); return }
+        busyMessage = String(localized: "正在准备开发者组件")
+        ddiProgress = nil
+        let (events, signal) = AsyncStream<Double?>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let display = Task {
+            for await value in events {
+                guard !Task.isCancelled else { return }
+                ddiProgress = value
+            }
+        }
+        defer { signal.finish(); display.cancel(); busyMessage = nil; ddiProgress = nil }
+        do {
+            ddiCacheStatus = try await repository.prepareCache(forceRefresh: forceRefresh, proxy: exitProxy,
+                                                              onProgress: { signal.yield($0) })
+            feedback = .init(kind: .success, title: String(localized: "开发者组件已就绪"))
+        } catch { fail(String(localized: "无法准备开发者组件"), error) }
+    }
+
+    func importLocalDDI(urls: [URL]) async {
+        guard busyMessage == nil, deviceRefresh == nil, let repository = environment.ddiRepository else { return }
+        busyMessage = String(localized: "正在准备开发者组件")
+        defer { busyMessage = nil }
+        do {
+            ddiCacheStatus = try await repository.importLocalFiles(from: urls)
+            feedback = .init(kind: .success, title: String(localized: "开发者组件已就绪"))
+        } catch { fail(String(localized: "无法导入开发者组件"), error) }
+    }
+
+    func clearDDICache() async {
+        guard busyMessage == nil, deviceRefresh == nil, let repository = environment.ddiRepository else { return }
+        busyMessage = String(localized: "正在清理开发者组件")
+        defer { busyMessage = nil }
+        do {
+            try await repository.clearCache()
+            await refreshDDICacheStatus()
+            feedback = .init(kind: .success, title: String(localized: "开发者组件缓存已清除"))
+        } catch { fail(String(localized: "无法清理开发者组件"), error) }
+    }
+
     func switchToDemo(_ enabled: Bool) async {
         guard enabled != isDemo, busyMessage == nil, deviceRefresh == nil else { return }
         do {
@@ -502,6 +677,8 @@ import SwiftUI
             zoneCheck?.cancel()
             deviceWatch?.cancel()
             deviceWatch = nil
+            pathWatch?.cancel()
+            pathWatch = nil
             environment.notifier.onFollow = nil
             busyMessage = String(localized: "正在切换模式")
             await environment.tunnelCoordinator.disconnectOwnedTunnelIfIdle()
@@ -509,6 +686,9 @@ import SwiftUI
             bindNotifications()
             AppEnvironment.modePreferences.set(enabled, forKey: "ElsewhereDemoMode")
             (exit, pendingExitEvent, exitError, exitRequest) = (nil, nil, nil, nil)
+            pendingAction = nil
+            ddiProgress = nil
+            ddiCacheStatus = .notDownloaded
             state = AppStateStore.State(); loaded = false
             (pairingRecords, deviceStates, feedback, busyMessage) = ([], [:], nil, nil)
             await load()

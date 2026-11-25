@@ -49,10 +49,10 @@ struct SplashView: View {
                 .task {
                     withAnimation(.easeOut(duration: reduceMotion ? 0.2 : 0.8)) { markIn = true }
                     if !reduceMotion {
-                        try? await Task.sleep(for: .milliseconds(500))
+                        try? await Task.sleep(for: .milliseconds(150))
                         guard !Task.isCancelled else { return }
                         field.tap(at: center, strength: 0.8)
-                        try? await Task.sleep(for: .milliseconds(800))
+                        try? await Task.sleep(for: .milliseconds(200))
                         guard !Task.isCancelled else { return }
                     }
                     withAnimation(.easeOut(duration: reduceMotion ? 0.2 : 0.65)) { arrived = true }
@@ -63,16 +63,12 @@ struct SplashView: View {
     }
 
     private func start(from point: CGPoint, size: CGSize) {
-        withAnimation(.easeOut(duration: 0.24), completionCriteria: .removed) {
-            leaving = true
-        } completion: {
+        withAnimation(.easeOut(duration: 0.24), completionCriteria: .removed) { leaving = true } completion: {
             if !reduceMotion { field.reveal(at: point) }
             let duration = reduceMotion ? 0.3 : HoleMask.extent(from: point, in: size) / 850
             withAnimation(.linear(duration: duration), completionCriteria: .removed) {
                 revealing = true
-            } completion: {
-                onFinish()
-            }
+            } completion: { onFinish() }
         }
     }
 }
